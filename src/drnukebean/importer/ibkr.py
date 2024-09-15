@@ -160,32 +160,35 @@ class IBKRImporter(importer.ImporterProtocol):
         else:
             print('**** loading from pickle')
             with open(self.filepath, 'rb') as pf:
-                statement = pickle.load(pf)
+                statement = pickle.load(pf) 
+        try:
+            # convert to dataframes
+            poi = statement.FlexStatements[0]  # point of interest
+            # relevant items from report
+            reports = ['CashReport', 'Trades', 'CashTransactions']
+            tabs = {report: pd.DataFrame([{key: val for key, val in entry.__dict__.items()}
+                                        for entry in poi.__dict__[report]])
+                    for report in reports}
 
-        # convert to dataframes
-        poi = statement.FlexStatements[0]  # point of interest
-        # relevant items from report
-        reports = ['CashReport', 'Trades', 'CashTransactions']
-        tabs = {report: pd.DataFrame([{key: val for key, val in entry.__dict__.items()}
-                                      for entry in poi.__dict__[report]])
-                for report in reports}
+            # get single dataFrames
+            ct = tabs['CashTransactions']
+            tr = tabs['Trades']
+            cr = tabs['CashReport']
 
-        # get single dataFrames
-        ct = tabs['CashTransactions']
-        tr = tabs['Trades']
-        cr = tabs['CashReport']
+            # throw out IBKR jitter, mostly None
+            ct.drop(columns=[col for col in ct if all(
+                ct[col].isnull())], inplace=True)
+            tr.drop(columns=[col for col in tr if all(
+                tr[col].isnull())], inplace=True)
+            cr.drop(columns=[col for col in cr if all(
+                cr[col].isnull())], inplace=True)
+            transactions = self.Trades(
+                tr) + self.CashTransactions(ct) + self.Balances(cr)
 
-        # throw out IBKR jitter, mostly None
-        ct.drop(columns=[col for col in ct if all(
-            ct[col].isnull())], inplace=True)
-        tr.drop(columns=[col for col in tr if all(
-            tr[col].isnull())], inplace=True)
-        cr.drop(columns=[col for col in cr if all(
-            cr[col].isnull())], inplace=True)
-        transactions = self.Trades(
-            tr) + self.CashTransactions(ct) + self.Balances(cr)
+            return transactions
+        except Exception as e:
+            logging.critical(e, exc_info=True)
 
-        return transactions
 
     def CashTransactions(self, ct):
         """
@@ -310,12 +313,16 @@ class IBKRImporter(importer.ImporterProtocol):
                 text = row['description']
 
             # Find ISIN in description in parentheses
-            regex = "|".join([r'\(([a-zA-Z]{2}[a-zA-Z0-9]{9}\d)\)',
-                              self.roc_str])
             if self.roc_str in text:
                 isin = self.roc_str
             else:
-                isin = re.findall('\(([a-zA-Z]{2}[a-zA-Z0-9]{9}\d)\)', text)[0]
+                matches = re.findall(r'\(([a-zA-Z]{2}[a-zA-Z0-9]{9}\d)\)', text)
+                if matches:
+                    isin = matches[0]
+                else:
+                    isin = "ISIN not found"
+                    print("No ISIN match found.")
+
             pershare_match = re.search('(\d*[.]\d*)(\D*)(PER SHARE)',
                                        text, re.IGNORECASE)
             # payment in lieu of a dividend does not have a PER SHARE in description
