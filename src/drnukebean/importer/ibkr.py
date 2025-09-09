@@ -213,14 +213,18 @@ class IBKRImporter(importer.ImporterProtocol):
         div['__divtype__'] = div['type']
 
         # Make a copy of dataframe prior to append a column to avoid SettingWithCopyWarning
-        wht = ct[ct['type'] == CashAction.WHTAX].copy()              # WHT only
+        divwht = ct[ct['type'] == CashAction.WHTAX].copy()              # WHT only
 
         # create pseudo colum __divtype__ to match to div's __divtype__
-        wht['__divtype__'] = wht['description'].map(lambda d:
-                                                    CashAction.PAYMENTINLIEU if re.match('.*payment in lieu of dividend', d, re.IGNORECASE)
-                                                    else CashAction.DIVIDEND)
+        divwht['__divtype__'] = divwht['description'].map(
+            lambda d:
+            CashAction.PAYMENTINLIEU if re.match('.*payment in lieu of dividend', d, re.IGNORECASE)
+            else CashAction.DIVIDEND if re.match('.*dividend', d, re.IGNORECASE)
+            else None )
+        # filter out non-dividend wht
+        divwht = divwht[divwht['__divtype__'].map(lambda t: t != None)]
 
-        if len(div) != len(wht):
+        if len(div) != len(divwht):
             matches = self.Dividends(div, with_wht=False)
         elif len(div) == 0:
             # in case of no dividends,
@@ -228,7 +232,7 @@ class IBKRImporter(importer.ImporterProtocol):
         else:
             # matching WHT & div
             match = pd.merge(
-                div, wht, on=['symbol', 'reportDate', '__divtype__'])
+                div, divwht, on=['symbol', 'reportDate', '__divtype__'])
             matches = self.Dividends(match)
         matches.extend(self.Dividends(roc,with_wht=False))
 
@@ -240,8 +244,20 @@ class IBKRImporter(importer.ImporterProtocol):
 
         int_ = ct[ct['type'].map(lambda t: t == CashAction.BROKERINTRCVD
                                  or t == CashAction.BROKERINTPAID)]     # interest only
-        if len(int_) > 0:
-            ints = self.Interest(int_)
+
+        # Make a copy of dataframe prior to append a column to avoid SettingWithCopyWarning
+        intwht = ct[ct['type'] == CashAction.WHTAX].copy()              # WHT only
+
+        intwht['__inttype__'] = intwht['description'].map(
+            lambda d:
+            CashAction.BROKERINTRCVD if re.match('.*on credit int', d, re.IGNORECASE)
+            else CashAction.BROKERINTPAID if re.match('.*dunnowhatthiswouldbe', d, re.IGNORECASE)
+            else None )
+        # filter out non-interest wht
+        intwht = intwht[intwht['__inttype__'].map(lambda t: t != None)]
+
+        if len(int_) + len(intwht) > 0:
+            ints = self.Interest(int_, intwht)
         else:
             ints = []
 
@@ -356,7 +372,7 @@ class IBKRImporter(importer.ImporterProtocol):
 
         return divTransactions
 
-    def Interest(self, int_):
+    def Interest(self, int_, intwht):
         # calculates interest payments from IBKR data
         intTransactions = []
         for idx, row in int_.iterrows():
@@ -378,11 +394,37 @@ class IBKRImporter(importer.ImporterProtocol):
                                  row['reportDate'],
                                  self.flag,
                                  'IB',     # payee
-                                 ' '.join(['Interest ', currency, month]),
+                                 text,
                                  data.EMPTY_SET,
                                  data.EMPTY_SET,
                                  postings
                                  ))
+
+        for idx, row in intwht.iterrows():
+            currency = row['currency']
+            amount_ = amount.Amount(row['amount'], currency)
+            text = row['description']
+            month = re.findall('\w{3}-\d{4}', text)[0]
+
+            # make the postings, two for interest payments
+            # received and paid interests are booked on the same account
+            postings = [data.Posting(self.getWHTAccount(currency),
+                                     -amount_, None, None, None, None),
+                        data.Posting(self.getLiquidityAccount(currency),
+                                     amount_, None, None, None, None)
+                        ]
+            meta = data.new_metadata('Withholding tax', 0)
+            intTransactions.append(
+                data.Transaction(meta,
+                                 row['reportDate'],
+                                 self.flag,
+                                 'IB',     # payee
+                                 text,
+                                 data.EMPTY_SET,
+                                 data.EMPTY_SET,
+                                 postings
+                                 ))
+
         return intTransactions
 
     def Deposits(self, dep):
@@ -402,7 +444,7 @@ class IBKRImporter(importer.ImporterProtocol):
                         data.Posting(self.getLiquidityAccount(currency),
                                      amount_, None, None, None, None)
                         ]
-            meta = data.new_metadata('deposit/withdrawel', 0)
+            meta = data.new_metadata('deposit/withdrawal', 0)
             depTransactions.append(
                 data.Transaction(meta,  # could add div per share, ISIN,....
                                  row['reportDate'],
