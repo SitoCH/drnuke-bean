@@ -5,9 +5,10 @@ import re
 from datetime import datetime, timedelta
 import logging
 
+import beangulp
+
 from beancount.core import data
 from beancount.core.amount import Amount
-from beancount.ingest import importer
 from beancount.core.number import Decimal
 from .util import remove_spaces
 
@@ -39,7 +40,7 @@ def strip_new_pf_format(s):
     return s.strip("=").strip('"')
 
 
-class PFGImporter(importer.ImporterProtocol):
+class PFGImporter(beangulp.Importer):
     """
     Beancount Importer for the Postfinance giro account bank statements
     """
@@ -54,7 +55,7 @@ class PFGImporter(importer.ImporterProtocol):
                  filetypes=[],
                  date_format='%d.%m.%Y'):
 
-        self.account = account
+        self._account = account
         if balance_account is not None:
             self.balance_account = balance_account
         else:
@@ -73,31 +74,32 @@ class PFGImporter(importer.ImporterProtocol):
         self.manual_fixes = manual_fixes
         self.date_format = date_format
 
+    @property
     def name(self):
         return 'PFG {}'.format(self.__class__.__name__)
 
-    def file_account(self, _):
-        return self.account
+    def account(self, _):
+        return self._account
 
-    def file_date(self, file_):
-        self.extract(file_)
+    def file_date(self, filepath):
+        self.extract(filepath)
         return self._date_from
 
-    def identify(self, file_):
-        check = self.checkForAccount(file_)
+    def identify(self, filepath: str):
+        check = self.checkForAccount(filepath)
         return check
 
-    def checkForAccount(self, file_):
+    def checkForAccount(self, filepath: str):
         # find amatch between the config's IBAN and the parsed file's iban
         # first check if the file is of a desired file type. this prevents searching
         # pdf's and jpg's in case we just want csv's.
-        if (len(self.filetypes) > 0) and (not (Path(file_.name).suffix.lower() in self.filetypes)):
+        if (len(self.filetypes) > 0) and (not (Path(filepath).suffix.lower() in self.filetypes)):
             return False
 
         try:
-            f = open(file_.name, encoding=self.file_encoding)
+            file_ = open(filepath, encoding=self.file_encoding)
 
-            with f as fd:
+            with file_ as fd:
                 reader = csv.reader(fd, delimiter=self.delimiter)
                 L = [1,3]  # row index in which iban is found
                 C = 1  # column index in which iban is found
@@ -113,42 +115,42 @@ class PFGImporter(importer.ImporterProtocol):
         except (UnicodeDecodeError, IOError) as e:
             if isinstance(e, UnicodeDecodeError):
                 print(
-                    f'***** file {file_.name} in PFGImporter throws UnicodeDecodeError for encoding {e.encoding} of byte {e.object[e.start:e.end]} at position {e.start} and reason {e.reason}')
+                    f'***** file {filepath} in PFGImporter throws UnicodeDecodeError for encoding {e.encoding} of byte {e.object[e.start:e.end]} at position {e.start} and reason {e.reason}')
             elif isinstance(e, IOError):
-                print('***** Cannot open/read {}'.format(file_.name))
+                print('***** Cannot open/read {}'.format(filepath))
             return False
 
-    def getLanguage(self, file_):
+    def getLanguage(self, filepath: str):
         # find out which language the report is in based on the first line
         langdict = {'Datum von:': 'DE',
                     'Date from:': 'EN',
                     'Buchungsart': 'DE'}
         try:
-            with open(file_.name, encoding=self.file_encoding) as f:
+            with open(filepath, encoding=self.file_encoding) as f:
                 line = f.readline()
                 for key, val in langdict.items():
                     if key in line:
                         return val
 
         except:
-            print('***** Cannot determine language of {}'.format(file_.name))
+            print('***** Cannot determine language of {}'.format(filepath))
             pass
         print(
             f'***** None of the language detection strings {list(langdict.keys())} found in line "{line}"')
         return None
 
-    def extract(self, file_, existing_entries=None):
+    def extract(self, filepath: str, existing: data.Entries) -> data.Entries:
         # the actual text processing of the bank statement
 
-        self.language = self.getLanguage(file_)
+        self.language = self.getLanguage(filepath)
         if self.language == None:
             return []
         entries = []
 
-        if not self.checkForAccount(file_):
+        if not self.checkForAccount(filepath):
             raise InvalidFormatError()
 
-        with open(file_.name, encoding=self.file_encoding) as fd:
+        with open(filepath, encoding=self.file_encoding) as fd:
 
             reader = csv.reader(fd, delimiter=self.delimiter)
 
@@ -164,31 +166,24 @@ class PFGImporter(importer.ImporterProtocol):
             line = next(reader)    # check currency
             if strip_new_pf_format(line[1]) != self.currency:
                 print('Importer vs. bankstatement currency: {} {} in {}'.format(
-                    self.currency, line[1], file_.name))
+                    self.currency, line[1], filepath))
                 return []
             line = next(reader)  # ignore empty line
             # get the headers fot the actual transaction table
             cols = next(reader)
-            # headers for english files:
-            # 0 :  Booking date
-            # 1 :  Notification text
-            # 2 :  Credit in CHF
-            # 3 :  Debit in CHF
-            # 4 :  Value
-            # 5 :  Balance in CHF
 
             first_transaction = True  # the first tx in the csv is the latest
             # Data entries
             for i, row in enumerate(reader):
                 if len(row) < 5:  # "end" of bank statment or empty line
                     continue
-                meta = data.new_metadata(file_.name, i)
-                credit = DecimalOrZero(row[2])
-                debit = DecimalOrZero(row[3])
+                meta = data.new_metadata(filepath, i)
+                credit = DecimalOrZero(row[3])
+                debit = DecimalOrZero(row[4])
                 total = credit+debit  # mind PF sign convention
                 date = datetime.strptime(row[0], self.date_format).date()
                 amount = Amount(total, self.currency)
-                description = row[1]
+                description = row[2]
                 # get closing balance, if available
                 # i just happens that the first trasaction contains the latest balance
                 if (first_transaction == True) & (len(row)==8):
@@ -206,13 +201,13 @@ class PFGImporter(importer.ImporterProtocol):
 
                 # prepare/ make the transaction
                 d = dict(amount=amount,
-                         account=self.account,
+                         account=self._account,
                          meta=meta,
-                         flag=self.FLAG,
+                         flag='*',
                          narration=description,
                          payee='',
                          date=date,
-                         postings=[data.Posting(self.account,
+                         postings=[data.Posting(self._account,
                                                 amount,
                                                 None,
                                                 None,
