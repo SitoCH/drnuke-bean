@@ -10,11 +10,9 @@ Setup:
 
 import pandas as pd
 from datetime import timedelta
-import xml.etree.ElementTree as ET
 import warnings
 import pickle
 import re
-import numpy as np
 import logging
 
 import yaml
@@ -23,17 +21,15 @@ from ibflex import client, parser, Types
 from ibflex.enums import CashAction, BuySell
 from ibflex.client import ResponseCodeError
 
-from beancount.query import query
-from beancount.parser import options
-from beancount.ingest import importer
+import beangulp
+
 from beancount.core import data, amount
 from beancount.core.number import D
 from beancount.core.number import Decimal
 from beancount.core import position
-from beancount.core.number import MISSING
 
 
-class IBKRImporter(importer.ImporterProtocol):
+class IBKRImporter(beangulp.Importer):
     """
     Beancount Importer for the Interactive Brokers XML FlexQueries
     """
@@ -76,9 +72,10 @@ class IBKRImporter(importer.ImporterProtocol):
         self.configFile = configFile
         self.roc_str = "Return of Capital" # that special swiss thing
 
-    def identify(self, file):
-        return self.configFile == path.basename(file.name)
-
+    def identify(self, filepath: str):
+        return self.configFile == path.basename(filepath)
+    
+    @property
     def name(self) -> str:
         return self.configFile
 
@@ -121,15 +118,15 @@ class IBKRImporter(importer.ImporterProtocol):
         return ':'.join([self.Mainaccount.replace('Assets', 'Income'),
                         self.mapSymbol(symbol), self.PnLSuffix])
 
-    def file_account(self, _):
+    def account(self, _):
         return self.Mainaccount
 
-    def extract(self, credsfile, existing_entries=None):
+    def extract(self, filepath: str, existing: data.Entries) -> data.Entries:
         # the actual processing of the flex query
 
         # get the IBKR creentials ready
         try:
-            with open(credsfile.name, 'r') as f:
+            with open(filepath, 'r') as f:
                 config = yaml.safe_load(f)
                 token = config['token']
                 queryId = config['queryId']
@@ -243,8 +240,20 @@ class IBKRImporter(importer.ImporterProtocol):
 
         int_ = ct[ct['type'].map(lambda t: t == CashAction.BROKERINTRCVD
                                  or t == CashAction.BROKERINTPAID)]     # interest only
-        if len(int_) > 0:
-            ints = self.Interest(int_)
+        
+        # Make a copy of dataframe prior to append a column to avoid SettingWithCopyWarning
+        intwht = ct[ct['type'] == CashAction.WHTAX].copy()              # WHT only
+
+        intwht['__inttype__'] = intwht['description'].map(
+            lambda d:
+            CashAction.BROKERINTRCVD if re.match('.*on credit int', d, re.IGNORECASE)
+            else CashAction.BROKERINTPAID if re.match('.*dunnowhatthiswouldbe', d, re.IGNORECASE)
+            else None )
+        # filter out non-interest wht
+        intwht = intwht[intwht['__inttype__'].map(lambda t: t != None)]
+
+        if len(int_) + len(intwht) > 0:
+            ints = self.Interest(int_, intwht)
         else:
             ints = []
 
@@ -363,7 +372,7 @@ class IBKRImporter(importer.ImporterProtocol):
 
         return divTransactions
 
-    def Interest(self, int_):
+    def Interest(self, int_, intwht):
         # calculates interest payments from IBKR data
         intTransactions = []
         for idx, row in int_.iterrows():
@@ -385,11 +394,37 @@ class IBKRImporter(importer.ImporterProtocol):
                                  row['reportDate'],
                                  self.flag,
                                  'IB',     # payee
-                                 ' '.join(['Interest ', currency, month]),
+                                 text,
                                  data.EMPTY_SET,
                                  data.EMPTY_SET,
                                  postings
                                  ))
+            
+        for idx, row in intwht.iterrows():
+            currency = row['currency']
+            amount_ = amount.Amount(row['amount'], currency)
+            text = row['description']
+            month = re.findall('\w{3}-\d{4}', text)[0]
+
+            # make the postings, two for interest payments
+            # received and paid interests are booked on the same account
+            postings = [data.Posting(self.getWHTAccount(currency),
+                                     -amount_, None, None, None, None),
+                        data.Posting(self.getLiquidityAccount(currency),
+                                     amount_, None, None, None, None)
+                        ]
+            meta = data.new_metadata('Withholding tax', 0)
+            intTransactions.append(
+                data.Transaction(meta,
+                                 row['reportDate'],
+                                 self.flag,
+                                 'IB',     # payee
+                                 text,
+                                 data.EMPTY_SET,
+                                 data.EMPTY_SET,
+                                 postings
+                                 ))
+
         return intTransactions
 
     def Deposits(self, dep):
