@@ -510,7 +510,7 @@ class IBKRImporter(importer.ImporterProtocol):
             commission = amount.Amount(
                 (round(row['ibCommission'],2)), currency_IBcommision)
             quantity = amount.Amount(row['quantity'], symbol)
-            price = amount.Amount(round(row['tradePrice'],2), currency)
+            price = amount.Amount(row['tradePrice'], currency)
             text = row['description']
 
             number_per = D(row['tradePrice'])
