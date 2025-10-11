@@ -140,6 +140,9 @@ class PFCCImporter(importer.ImporterProtocol):
             allowed_lines = ["Karte:", "Card:"] # add your language
             assert line[0] in allowed_lines, f"statement format changed in line {reader.line_num}: {line}" 
             line = next(reader) 
+            allowed_lines = ["Karteninhaber:"] # add your language
+            assert line[0] in allowed_lines, f"statement format changed in line {reader.line_num}: {line}" 
+            line = next(reader) 
             allowed_lines = ["Kategorie:", "Category:"] # add your language
             assert line[0] in allowed_lines, f"statement format changed in line {reader.line_num}: {line}" 
          
