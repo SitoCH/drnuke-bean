@@ -143,6 +143,10 @@ class FinPensionImporter(importer.ImporterProtocol):
     def Trades(self, trades):
         bean_transactions = []
         for idx, row in trades.iterrows():
+            # temporary fix for nan values
+            if row["Number of Shares"].is_nan():
+                logger.warning(f"detected nan values:{row}")
+                row=row.fillna(Decimal("0"))
             currency = row[FP_currency]
             isin = row['ISIN']
             symbol = self.isin_lookup.get(isin)
