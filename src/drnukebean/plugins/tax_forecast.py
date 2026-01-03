@@ -59,7 +59,7 @@ def tax_forecast(entries, options, config_str):
         # from accounts, aggregate positions
         taxable_incomes = get_income_expenses_from_accounts(
             entries, options, config, taxable_accounts)
-        if not taxable_incomes: #no income for that year
+        if not len(taxable_incomes): #no income for that year
             return entries, errors
         last_month_of_income = taxable_incomes.date.max().month
         taxable_incomes_by_currency = taxable_incomes.groupby(
