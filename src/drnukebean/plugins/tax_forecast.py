@@ -290,7 +290,7 @@ def make_transactions(config, options, taxes_per_month, last_month_of_income):
 
     for month in range(1, last_month_of_income+1):
         month_name = datetime.date(1900, month, 1).strftime('%b')
-        trans = data.Transaction(data.new_metadata(None, 0),
+        trans = data.Transaction(data.new_metadata("<tax_forecast>", 0),
                                  datetime.date(year, month, day),
                                  '*',
                                  "Tax Authority",
