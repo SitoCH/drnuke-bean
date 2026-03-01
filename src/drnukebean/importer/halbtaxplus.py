@@ -148,8 +148,8 @@ class HalbtaxPlusImporter(importer.ImporterProtocol):
 
         # Payee is always SBB; narration is the route.
         payee     = "SBB"
-        narration = _col(row, "Strecke", "Route").strip().replace("→", "->")
-
+        narration = (_col(row, "Strecke", "Route").strip().replace("→", "->")
+                     .replace("↔", "<->"))
         # Stash useful extras as beancount metadata.
         meta["reisedatum"]    = _col(row, "Reisedatum",    "Travel date")
         meta["bestellnummer"] = _col(row, "Bestellnummer", "Order number")
