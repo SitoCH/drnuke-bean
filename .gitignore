@@ -128,6 +128,9 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+# Local type-checker config (machine-specific paths)
+pyrightconfig.json
+
 # VIM swap files
 .*.swp
 
