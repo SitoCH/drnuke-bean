@@ -1,757 +1,869 @@
 """
-This is a beancount importer for Interactive Brokers. 
-Setup:
-1) have a running beancount system
-2) activate IB FLexQuery with the entries specified in []
-3) in the config.py file, specify a file location wiht your IBKR FlexQuery 
-    Credentials
-4) run 'bean-extract config.py ibkr.yml -f mainLedgerFile.bean
+Beancount importer for Interactive Brokers (IBKR) FlexQuery XML reports.
+
+This module is a pure file parser.  Network access lives in
+:mod:`drnukebean.importer.ibkr_flexquery`.
+
+Identification
+--------------
+Files are matched by XML content: the root element must be
+``<FlexQueryResponse>`` and, when *query_name* is supplied, its
+``queryName`` attribute must match exactly.  This removes any dependency on
+filenames or IBKR account numbers.
+
+Transaction types handled
+-------------------------
+Trades
+  * Stock buy / sell (with closed-lot cost specs for sells)
+  * Forex buy / sell
+
+CashTransactions
+  * Dividends and payments-in-lieu, with optional withholding-tax matching
+  * Return-of-capital distributions (Swiss-specific)
+  * Interest received / paid, with optional withholding-tax
+  * Broker fees
+  * Cash deposits / withdrawals (optional — suppressed when *deposit_account*
+    is empty)
+
+Balances
+  * One ``data.Balance`` per non-summary ``CashReport`` row
+
+FlexQuery sections required
+---------------------------
+CashReport        : Currency, EndingCash, ToDate
+Trades            : Symbol, Currency, Quantity, TradePrice, Proceeds,
+                    IBCommission, IBCommissionCurrency, NetCash,
+                    DateTime, TradeDate, OpenDateTime, BuySell, LevelOfDetail
+CashTransactions  : Symbol, Currency, Amount, Type, Description,
+                    ReportDate, DateTime
+
+Usage in run_imports.py::
+
+    from drnukebean.importer.ibkr import IBKRImporter
+    from drnukebean.importer.ibkr_flexquery import make_ibkr_setup
+
+    _ibkr_dir = Path('~/downloads/ibkr').expanduser()
+
+    pipelines = [
+        dict(
+            name='ibkr',
+            importer=IBKRImporter(
+                account='Assets:Invest:IBKR',
+                query_name=cfg.IBKR_QUERY_NAME,
+                currency='CHF',
+            ),
+            source_dir=_ibkr_dir,
+            output_file='~/ledger/import/IBKR.bean',
+            setup=make_ibkr_setup(
+                token=cfg.IBKR_TOKEN,
+                query_id=cfg.IBKR_QUERY_ID,
+                query_name=cfg.IBKR_QUERY_NAME,
+                dest_dir=_ibkr_dir,
+            ),
+            fixes=fixes_ibkr,
+            predict=False,
+        ),
+    ]
 """
 
-import pandas as pd
-from datetime import datetime, timedelta
-import xml.etree.ElementTree as ET
-import warnings
-import pickle
+from __future__ import annotations
+
+import functools
 import re
-import numpy as np
-import logging
+import xml.etree.ElementTree as ET
+from datetime import date, timedelta
+from pathlib import Path
 
-import yaml
-from os import path
-from ibflex import client, parser, Types
-from ibflex.enums import CashAction, BuySell
-from ibflex.client import ResponseCodeError
-
-from beancount.query import query
-from beancount.parser import options
-from beancount.ingest import importer
-from beancount.core import data, amount
+import beangulp
+from beancount.core import amount, data, position
 from beancount.core.number import D
-from beancount.core.number import Decimal
-from beancount.core import position
-from beancount.core.number import MISSING
+
+from ibflex import parser, Types
+from ibflex.enums import BuySell, CashAction
+
+from loguru import logger
+
+from drnukebean.importer.util import amount_add, minus
+
+# ---------------------------------------------------------------------------
+# Module-level constants
+# ---------------------------------------------------------------------------
+
+_ROC_STR = "Return of Capital"  # Swiss-specific: dividends that are legally RoC
+_FLEX_ROOT_TAG = "FlexQueryResponse"
+
+# Compiled regexes — reused across all rows
+_RE_WHT_PIL = re.compile(r".*payment in lieu of dividend", re.IGNORECASE)
+_RE_WHT_DIV = re.compile(r".*dividend", re.IGNORECASE)
+_RE_WHT_INTEREST = re.compile(r".*on credit int", re.IGNORECASE)
+_RE_ISIN = re.compile(r"\(([A-Z]{2}[A-Z0-9]{9}\d)\)")
+_RE_PER_SHARE = re.compile(
+    r"(?P<amount>\d*[.]\d*)\s*(?:[A-Z]+\s*)?PER SHARE", re.IGNORECASE
+)
+_RE_FEE_MONTH = re.compile(r"\b\w{3}\s+\d{4}\b")
+
+# ---------------------------------------------------------------------------
+# Module-level cached parser  (shared across instances, keyed by filepath)
+# ---------------------------------------------------------------------------
 
 
-class IBKRImporter(importer.ImporterProtocol):
+@functools.lru_cache(maxsize=8)
+def _parse_flex_file(filepath: str) -> Types.FlexQueryResponse:
+    """Parse and cache a FlexQuery XML file.  Avoids re-parsing within a run."""
+    raw = Path(filepath).read_bytes()
+    statement = parser.parse(raw)
+    if not isinstance(statement, Types.FlexQueryResponse):
+        raise ValueError(f"Unexpected ibflex response type: {type(statement)}")
+    return statement
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_forex(symbol: str) -> bool:
+    """Return True for IBKR forex pair symbols such as ``USD.CHF``."""
+    return bool(re.match(r"^[A-Z]{3}\.[A-Z]{3}$", symbol))
+
+
+def _wht_div_type(description: str) -> CashAction | str | None:
+    """Classify a WHT description and return the matching dividend type.
+
+    Returns:
+        ``CashAction.PAYMENTINLIEU``  – WHT on a payment-in-lieu dividend
+        ``CashAction.DIVIDEND``       – WHT on a regular dividend
+        ``"interest"``                – WHT on interest income
+        ``None``                      – unrecognised description
     """
-    Beancount Importer for the Interactive Brokers XML FlexQueries
+    if _RE_WHT_PIL.match(description):
+        return CashAction.PAYMENTINLIEU
+    if _RE_WHT_DIV.match(description):
+        return CashAction.DIVIDEND
+    if _RE_WHT_INTEREST.match(description):
+        return "interest"
+    return None
+
+
+def _forex_currencies(symbol: str) -> tuple[str, str]:
+    """Return ``(primary, secondary)`` from a forex symbol like ``USD.CHF``."""
+    m = re.match(r"(?P<prim>[A-Z]{3})\.(?P<sec>[A-Z]{3})", symbol)
+    if not m:
+        raise ValueError(f"Not a forex symbol: {symbol!r}")
+    return m.group("prim"), m.group("sec")
+
+
+# ---------------------------------------------------------------------------
+# Importer
+# ---------------------------------------------------------------------------
+
+
+class IBKRImporter(beangulp.Importer):
+    """Beancount importer for IBKR FlexQuery XML reports.
+
+    Args:
+        account:            Main beancount account, e.g. ``Assets:Invest:IBKR``.
+                            Sub-accounts are derived from this root.
+        query_name:         Expected ``queryName`` attribute in the
+                            ``FlexQueryResponse`` root element.  Used to
+                            identify files and to disambiguate when multiple
+                            XML files are present.  If ``None``, any
+                            FlexQueryResponse XML file matches.
+        currency:           Base currency of the IB account (default ``CHF``).
+        div_suffix:         Sub-account suffix for dividend income
+                            (default ``Div``).
+        div_account:        Explicit dividend income account.  Overrides the
+                            derived ``<Income root>:<symbol>:<div_suffix>``.
+        interest_suffix:    Sub-account suffix for interest income
+                            (default ``Interest``).
+        wht_account:        Root account for withholding-tax expenses, e.g.
+                            ``Expenses:Invest:IBKR:WHT``.  Symbol or currency
+                            is appended as a further sub-account.
+        fees_suffix:        Sub-account suffix for fees (default ``Fees``).
+        fees_account:       Explicit fees account.  Overrides the derived
+                            account.
+        pnl_suffix:         Sub-account suffix for realised P&L
+                            (default ``PnL``).
+        deposit_account:    Counterpart account for cash deposits /
+                            withdrawals.  If empty, deposit transactions are
+                            suppressed.
+        suppress_lot_price: If ``True``, closed-lot cost specs use price 0
+                            (hides original purchase price in the output).
+        symbol_map:         Dict remapping IBKR symbols to beancount commodity
+                            names, e.g. ``{'VWRL': 'VWRL3'}``.  Applied after
+                            auto-cleanup.
     """
 
-    def __init__(self,
-                 Mainaccount=None,  # for example Assets:Invest:IB
-                 currency='CHF',
-                 divSuffix='Div',  # suffix for dividend Account , like Assets:Invest:IB:VT:Div
-                 DividendsAccount=None,
-                 interestSuffix='Interest',
-                 WHTAccount=None,
-                 FeesSuffix='Fees',
-                 FeesAccount=None,
-                 PnLSuffix='PnL',
-                 fpath=None,  #
-                 depositAccount='',
-                 suppressClosedLotPrice=False,
-                 symbolMap={},
-                 configFile='ibkr.yaml'
-                 ):
+    def __init__(
+        self,
+        account: str,
+        query_name: str | None = None,
+        currency: str = "CHF",
+        div_suffix: str = "Div",
+        div_account: str | None = None,
+        interest_suffix: str = "Interest",
+        wht_account: str | None = None,
+        fees_suffix: str = "Fees",
+        fees_account: str | None = None,
+        pnl_suffix: str = "PnL",
+        deposit_account: str = "",
+        suppress_lot_price: bool = False,
+        symbol_map: dict[str, str] | None = None,
+    ) -> None:
+        self._account = account
+        self._query_name = query_name
+        self._currency = currency
+        self._div_suffix = div_suffix
+        self._div_account = div_account
+        self._interest_suffix = interest_suffix
+        self._wht_account = wht_account
+        self._fees_suffix = fees_suffix
+        self._fees_account = fees_account
+        self._pnl_suffix = pnl_suffix
+        self._deposit_account = deposit_account
+        self._suppress_lot_price = suppress_lot_price
+        self._symbol_map: dict[str, str] = symbol_map or {}
 
-        self.Mainaccount = Mainaccount  # main IB account in beancount
-        self.currency = currency        # main currency of IB account
-        self.divSuffix = divSuffix
-        self.DividendsAccount = DividendsAccount
-        self.WHTAccount = WHTAccount
-        self.interestSuffix = interestSuffix
-        self.FeesSuffix = FeesSuffix
-        self.FeesAccount = FeesAccount
-        self.PnLSuffix = PnLSuffix
-        self.filepath = fpath             # optional file path specification,
-        # if flex query should not be used online (loading time...)
-        # Cash deposits are usually already covered
-        self.depositAccount = depositAccount
-        # by checkings account statements. If you want anyway the
-        # deposit transactions, provide a True value
-        self.suppressClosedLotPrice = suppressClosedLotPrice
-        self.flag = '*'
-        self.symbolMap = symbolMap
-        self.configFile = configFile
-        self.roc_str = "Return of Capital" # that special swiss thing
+    # ------------------------------------------------------------------
+    # beangulp protocol
+    # ------------------------------------------------------------------
 
-    def identify(self, file):
-        return self.configFile == path.basename(file.name)
-
-    def name(self) -> str:
-        return self.configFile
-
-    def getLiquidityAccount(self, currency):
-        # Assets:Invest:IB:USD
-        return ':'.join([self.Mainaccount, currency])
-
-    def mapSymbol(self, symbol):
-        return self.symbolMap.get(symbol, symbol)
-
-    def getDivIncomeAcconut(self, currency, symbol):
-        if self.DividendsAccount:
-            return self.DividendsAccount
-        else:
-            # Income:Invest:IB:VTI:Div
-            return ':'.join([self.Mainaccount.replace('Assets', 'Income'),
-                            self.mapSymbol(symbol), self.divSuffix])
-
-    def getInterestIncomeAcconut(self, currency):
-        # Income:Invest:IB:USD
-        return ':'.join([self.Mainaccount.replace('Assets', 'Income'), self.interestSuffix, currency])
-
-    def getAssetAccount(self, symbol):
-        # Assets:Invest:IB:VTI
-        return ':'.join([self.Mainaccount, self.mapSymbol(symbol)])
-
-    def getWHTAccount(self, symbol):
-        # Expenses:Invest:IB:VTI:WTax
-        return ':'.join([self.WHTAccount, self.mapSymbol(symbol)])
-
-    def getFeesAccount(self, currency):
-        if self.FeesAccount:
-            return self.FeesAccount
-        else:
-            # Expenses:Invest:IB:Fees:USD
-            return ':'.join([self.Mainaccount.replace('Assets', 'Expenses'), self.FeesSuffix, currency])
-
-    def getPNLAccount(self, symbol):
-        # Expenses:Invest:IB:Fees:USD
-        return ':'.join([self.Mainaccount.replace('Assets', 'Income'),
-                        self.mapSymbol(symbol), self.PnLSuffix])
-
-    def file_account(self, _):
-        return self.Mainaccount
-
-    def extract(self, credsfile, existing_entries=None):
-        # the actual processing of the flex query
-
-        # get the IBKR creentials ready
+    def identify(self, filepath: str) -> bool:
+        """Match IBKR FlexQuery XML files, optionally filtered by query name."""
         try:
-            with open(credsfile.name, 'r') as f:
-                config = yaml.safe_load(f)
-                token = config['token']
-                queryId = config['queryId']
-        except:
-            warnings.warn('cannot read IBKR credentials file. Check filepath.')
-            return []
-
-        # get prices of existing transactions, in case we sell something
-        # priceLookup = PriceLookup(existing_entries, config['baseCcy'])
-
-        if self.filepath is None:
-            # get the report from IB. might take a while, when IB is queuing due to
-            # traffic
-            try:
-                # try except in case of connection interrupt
-                # Warning: queries sometimes take a few minutes until IB provides
-                # the data due to busy servers
-                response = client.download(token, queryId)
-                statement = parser.parse(response)
-            except ResponseCodeError as E:
-                logging.exception('Error fetching report, aborting')
-                return []
-            except Exception as E:
-                warnings.warn(f'could not fetch IBKR Statement. exiting. {E}')
-                # another option would be to try again
-                return []
-            assert isinstance(statement, Types.FlexQueryResponse)
-        else:
-            print('**** loading from pickle')
-            with open(self.filepath, 'rb') as pf:
-                statement = pickle.load(pf)
-
-        # convert to dataframes
-        poi = statement.FlexStatements[0]  # point of interest
-        # relevant items from report
-        reports = ['CashReport', 'Trades', 'CashTransactions']
-        tabs = {report: pd.DataFrame([{key: val for key, val in entry.__dict__.items()}
-                                      for entry in poi.__dict__[report]])
-                for report in reports}
-
-        # get single dataFrames
-        ct = tabs['CashTransactions']
-        tr = tabs['Trades']
-        cr = tabs['CashReport']
-
-        # throw out IBKR jitter, mostly None
-        ct.drop(columns=[col for col in ct if all(
-            ct[col].isnull())], inplace=True)
-        tr.drop(columns=[col for col in tr if all(
-            tr[col].isnull())], inplace=True)
-        cr.drop(columns=[col for col in cr if all(
-            cr[col].isnull())], inplace=True)
-        transactions = self.Trades(
-            tr) + self.CashTransactions(ct) + self.Balances(cr)
-
-        return transactions
-
-    def CashTransactions(self, ct):
-        """
-        This function turns the cash transactions table into beancount transactions
-        for dividends, Witholding Tax, Cash deposits (if the flag is set in the
-        ConfigIBKR.py) and Interests.
-        arg ct: pandas DataFrame with the according data
-        returns: list of Beancount transactions 
-        """
-        if len(ct) == 0:  # catch case of empty dataframe
-            return []
-
-        # first, separate different sorts of Data
-        # Cash dividend is split from payment in lieu of a dividend.
-        # Match them accordingly with the corresponding wht rows.
-        # Make a copy of dataframe prior to append a column to avoid SettingWithCopyWarning
-        dist = ct[ct['type'].map(lambda t: t == CashAction.DIVIDEND
-                                or t == CashAction.PAYMENTINLIEU)].copy()   # dividends only (both cash and payment in lieu of d.)
-        
-         # special swiss thing that looks like a dividend but legally isnt
-        dist["roc"] = dist.description.str.contains(self.roc_str)
-        div = dist[~dist.roc]
-        roc = dist[dist.roc]
-        # Duplicate column to match later with wht
-        div['__divtype__'] = div['type']
-
-        # Make a copy of dataframe prior to append a column to avoid SettingWithCopyWarning
-        divwht = ct[ct['type'] == CashAction.WHTAX].copy()              # WHT only
-
-        # create pseudo colum __divtype__ to match to div's __divtype__
-        divwht['__divtype__'] = divwht['description'].map(
-            lambda d:
-            CashAction.PAYMENTINLIEU if re.match('.*payment in lieu of dividend', d, re.IGNORECASE)
-            else CashAction.DIVIDEND if re.match('.*dividend', d, re.IGNORECASE)
-            else None )
-        # filter out non-dividend wht
-        divwht = divwht[divwht['__divtype__'].map(lambda t: t != None)]
-
-        if len(div) != len(divwht):
-            matches = self.Dividends(div, with_wht=False)
-        elif len(div) == 0:
-            # in case of no dividends,
-            matches = []
-        else:
-            # matching WHT & div
-            match = pd.merge(
-                div, divwht, on=['symbol', 'reportDate', '__divtype__'])
-            matches = self.Dividends(match)
-        matches.extend(self.Dividends(roc,with_wht=False))
-
-        dep = ct[ct['type'] == CashAction.DEPOSITWITHDRAW]    # Deposits only
-        if len(dep) > 0:
-            deps = self.Deposits(dep)
-        else:
-            deps = []
-
-        int_ = ct[ct['type'].map(lambda t: t == CashAction.BROKERINTRCVD
-                                 or t == CashAction.BROKERINTPAID)]     # interest only
-
-        # Make a copy of dataframe prior to append a column to avoid SettingWithCopyWarning
-        intwht = ct[ct['type'] == CashAction.WHTAX].copy()              # WHT only
-
-        intwht['__inttype__'] = intwht['description'].map(
-            lambda d:
-            CashAction.BROKERINTRCVD if re.match('.*on credit int', d, re.IGNORECASE)
-            else CashAction.BROKERINTPAID if re.match('.*dunnowhatthiswouldbe', d, re.IGNORECASE)
-            else None )
-        # filter out non-interest wht
-        intwht = intwht[intwht['__inttype__'].map(lambda t: t != None)]
-
-        if len(int_) + len(intwht) > 0:
-            ints = self.Interest(int_, intwht)
-        else:
-            ints = []
-
-        fee = ct[ct['type'] == CashAction.FEES]  # Fees only
-        if len(fee) > 0:
-            fees = self.Fee(fee)
-        else:
-            fees = []
-        # list of transactiosn with short name
-        ctTransactions = matches + deps + ints + fees
-
-        return ctTransactions
-
-    def Fee(self, fee):
-        # calculates fees from IBKR data
-        feeTransactions = []
-        for idx, row in fee.iterrows():
-            currency = row['currency']
-            amount_ = amount.Amount(row['amount'], currency)
-            text = row['description']
-            month = re.findall('\w{3} \d{4}', text)
-            if month:
-                month = month[0]
-            else:
-                month = text
-
-            # make the postings, two for fees
-            postings = [data.Posting(self.getFeesAccount(currency),
-                                     -amount_, None, None, None, None),
-                        data.Posting(self.getLiquidityAccount(currency),
-                                     amount_, None, None, None, None)]
-            meta = data.new_metadata(__file__, 0, {})  # actually no metadata
-            feeTransactions.append(
-                data.Transaction(meta,
-                                 row['reportDate'],
-                                 self.flag,
-                                 'IB',     # payee
-                                 ' '.join(['Fee', currency, month]),
-                                 data.EMPTY_SET,
-                                 data.EMPTY_SET,
-                                 postings))
-        return feeTransactions
-
-    def Dividends(self, match, with_wht=True):
-        # this function crates Dividend transactions from IBKR data
-        # make dividend & WHT transactions
-
-        divTransactions = []
-        for idx, row in match.iterrows():
-            dx = row.get('description_x', '')
-            symbol = self.mapSymbol(row['symbol'])
-            if with_wht:
-                currency = row['currency_x']
-                currency_wht = row['currency_y']
-                if currency != currency_wht:
-                    warnings.warn(('Warning: Dividend currency {} ' +
-                                   'mismatches WHT currency {}. Skipping this' +
-                                   'Transaction').format(currency, currency_wht))
-                    continue
-                amount_div = amount.Amount(row['amount_x'], currency)
-                amount_wht = amount.Amount(row['amount_y'], currency)
-                text = dx
-            else:
-                currency = row['currency']
-                amount_div = amount.Amount(row['amount'], currency)
-                text = row['description']
-
-            # Find ISIN in description in parentheses
-            regex = "|".join([r'\(([a-zA-Z]{2}[a-zA-Z0-9]{9}\d)\)',
-                              self.roc_str])
-            if self.roc_str in text:
-                isin = self.roc_str
-            else:
-                isin = re.findall('\(([a-zA-Z]{2}[a-zA-Z0-9]{9}\d)\)', text)[0]
-            pershare_match = re.search('(\d*[.]\d*)(\D*)(PER SHARE)',
-                                       text, re.IGNORECASE)
-            # payment in lieu of a dividend does not have a PER SHARE in description
-            pershare = pershare_match.group(1) if pershare_match else ''
-
-            # make the postings, three for dividend/ wht transactions
-            postings = [data.Posting(self.getDivIncomeAcconut(currency,
-                                                              symbol),
-                                     -amount_div, None, None, None, None),
-                        ]
-            if with_wht:
-                postings.extend([
-                        data.Posting(self.getWHTAccount(symbol),
-                                     -amount_wht, None, None, None, None),
-                        data.Posting(self.getLiquidityAccount(currency),
-                                     AmountAdd(amount_div, amount_wht),
-                                     None, None, None, None)
-                        ])
-            else:
-                postings.append(
-                        data.Posting(self.getLiquidityAccount(currency),
-                                     amount_div, None, None, None, None)
-                        )
-            meta = data.new_metadata(
-                'dividend', 0, {'isin': isin, 'per_share': pershare})
-            in_lieu_flag = " in lieu" if re.match(
-                '.*payment in lieu of dividend', dx, re.IGNORECASE) else ""
-            divTransactions.append(
-                data.Transaction(meta,  # could add div per share, ISIN,....
-                                 row['reportDate'],
-                                 self.flag,
-                                 symbol,     # payee
-                                 'Dividend '+symbol + in_lieu_flag,
-                                 data.EMPTY_SET,
-                                 data.EMPTY_SET,
-                                 postings
-                                 ))
-
-        return divTransactions
-
-    def Interest(self, int_, intwht):
-        # calculates interest payments from IBKR data
-        intTransactions = []
-        for idx, row in int_.iterrows():
-            currency = row['currency']
-            amount_ = amount.Amount(row['amount'], currency)
-            text = row['description']
-            month = re.findall('\w{3}-\d{4}', text)[0]
-
-            # make the postings, two for interest payments
-            # received and paid interests are booked on the same account
-            postings = [data.Posting(self.getInterestIncomeAcconut(currency),
-                                     -amount_, None, None, None, None),
-                        data.Posting(self.getLiquidityAccount(currency),
-                                     amount_, None, None, None, None)
-                        ]
-            meta = data.new_metadata('Interest', 0)
-            intTransactions.append(
-                data.Transaction(meta,  # could add div per share, ISIN,....
-                                 row['reportDate'],
-                                 self.flag,
-                                 'IB',     # payee
-                                 text,
-                                 data.EMPTY_SET,
-                                 data.EMPTY_SET,
-                                 postings
-                                 ))
-
-        for idx, row in intwht.iterrows():
-            currency = row['currency']
-            amount_ = amount.Amount(row['amount'], currency)
-            text = row['description']
-            month = re.findall('\w{3}-\d{4}', text)[0]
-
-            # make the postings, two for interest payments
-            # received and paid interests are booked on the same account
-            postings = [data.Posting(self.getWHTAccount(currency),
-                                     -amount_, None, None, None, None),
-                        data.Posting(self.getLiquidityAccount(currency),
-                                     amount_, None, None, None, None)
-                        ]
-            meta = data.new_metadata('Withholding tax', 0)
-            intTransactions.append(
-                data.Transaction(meta,
-                                 row['reportDate'],
-                                 self.flag,
-                                 'IB',     # payee
-                                 text,
-                                 data.EMPTY_SET,
-                                 data.EMPTY_SET,
-                                 postings
-                                 ))
-
-        return intTransactions
-
-    def Deposits(self, dep):
-        # creates deposit transactions from IBKR Data
-
-        depTransactions = []
-        # assumes you figured out how to deposit/ withdrawal without fees
-        if len(self.depositAccount) == 0:  # control this from the config file
-            return []
-        for idx, row in dep.iterrows():
-            currency = row['currency']
-            amount_ = amount.Amount(row['amount'], currency)
-
-            # make the postings. two for deposits
-            postings = [data.Posting(self.depositAccount,
-                                     -amount_, None, None, None, None),
-                        data.Posting(self.getLiquidityAccount(currency),
-                                     amount_, None, None, None, None)
-                        ]
-            meta = data.new_metadata('deposit/withdrawal', 0)
-            depTransactions.append(
-                data.Transaction(meta,  # could add div per share, ISIN,....
-                                 row['reportDate'],
-                                 self.flag,
-                                 'self',     # payee
-                                 "deposit / withdrawal",
-                                 data.EMPTY_SET,
-                                 data.EMPTY_SET,
-                                 postings
-                                 ))
-        return depTransactions
-
-    def Trades(self, tr):
-        """
-        This function turns the IBKR Trades table into beancount transactions
-        for Trades
-        arg tr: pandas DataFrame with the according data
-        returns: list of Beancount transactions 
-        """
-        if len(tr) == 0:  # catch the case of no transactions
-            return []
-        # forex transactions
-        fx = tr[tr['symbol'].apply(isForex)]
-        # Stocks transactions
-        stocks = tr[~tr['symbol'].apply(isForex)]
-
-        trTransactions = self.Forex(fx) + self.Stocktrades(stocks)
-
-        return trTransactions
-
-    def Forex(self, fx):
-        # returns beancount transactions for IBKR forex transactions
-
-        fxTransactions = []
-        for idx, row in fx.iterrows():
-
-            symbol = row['symbol']
-            curr_prim, curr_sec = getForexCurrencies(symbol)
-            currency_IBcommision = row['ibCommissionCurrency']
-            proceeds = amount.Amount(round(row['proceeds'], 2), curr_sec)
-            quantity = amount.Amount(round(row['quantity'], 2), curr_prim)
-            price = amount.Amount(row['tradePrice'], curr_sec)
-            commission = amount.Amount(
-                round(row['ibCommission'], 2), currency_IBcommision)
-            buysell = row['buySell'].name
-
-            cost = position.CostSpec(
-                number_per=None,
-                number_total=None,
-                currency=None,
-                date=None,
-                label=None,
-                merge=False)
-
-            postings = [
-                data.Posting(self.getLiquidityAccount(curr_prim),
-                             quantity, None, price, None, None),
-                data.Posting(self.getLiquidityAccount(curr_sec),
-                             proceeds, None, None, None, None),
-                data.Posting(self.getLiquidityAccount(currency_IBcommision),
-                             commission, None, None, None, None),
-                data.Posting(self.getFeesAccount(currency_IBcommision),
-                             minus(commission), None, None, None, None)
-            ]
-
-            fxTransactions.append(
-                data.Transaction(data.new_metadata('FX Transaction', 0),
-                                 row['tradeDate'],
-                                 self.flag,
-                                 symbol,     # payee
-                                 ' '.join(
-                                     [buysell, quantity.to_string(), '@', price.to_string()]),
-                                 data.EMPTY_SET,
-                                 data.EMPTY_SET,
-                                 postings
-                                 ))
-        return fxTransactions
-
-    def Stocktrades(self, stocks):
-        # return the stocks transactions
-
-        stocktrades = stocks[stocks['levelOfDetail']
-                             == 'EXECUTION']  # actual trades
-        buy = stocktrades[(stocktrades['buySell'] == BuySell.BUY) |        # purchases, including cancelled ones
-                          (stocktrades['buySell'] == BuySell.CANCELBUY)]   # and the cancellation transactions to keep balance
-        sale = stocktrades[(stocktrades['buySell'] == BuySell.SELL) |      # sales, including cancelled ones
-                           (stocktrades['buySell'] == BuySell.CANCELSELL)]  # and the cancellation transactions to keep balance
-        # closed lots; keep index to match with sales
-        lots = stocks[stocks['levelOfDetail'] == 'CLOSED_LOT']
-
-        stockTransactions = self.Panic(sale, lots) + self.Shopping(buy)
-
-        return stockTransactions
-
-    def Shopping(self, buy):
-        # let's go shopping!!
-
-        Shoppingbag = []
-        for idx, row in buy.iterrows():
-            # continue # debugging
-            currency = row['currency']
-            currency_IBcommision = row['ibCommissionCurrency']
-            symbol = self.mapSymbol(row['symbol'])
-            proceeds = amount.Amount(round(row['proceeds'],2), currency)
-            commission = amount.Amount(
-                (round(row['ibCommission'],2)), currency_IBcommision)
-            quantity = amount.Amount(row['quantity'], symbol)
-            price = amount.Amount(row['tradePrice'], currency)
-            text = row['description']
-
-            number_per = D(row['tradePrice'])
-            currency_cost = currency
-            cost = position.CostSpec(
-                number_per=price.number,
-                number_total=None,
-                currency=currency,
-                date=row['tradeDate'],
-                label=None,
-                merge=False)
-
-            postings = [
-                data.Posting(self.getAssetAccount(symbol),
-                             quantity, cost, None, None, None),
-                data.Posting(self.getLiquidityAccount(currency),
-                             proceeds, None, None, None, None),
-                data.Posting(self.getLiquidityAccount(currency_IBcommision),
-                             commission, None, None, None, None),
-                data.Posting(self.getFeesAccount(currency_IBcommision),
-                             minus(commission), None, None, None, None)
-            ]
-
-            Shoppingbag.append(
-                data.Transaction(data.new_metadata('Buy', 0),
-                                 row['dateTime'].date(),
-                                 self.flag,
-                                 symbol,     # payee
-                                 ' '.join(
-                                     ['BUY', quantity.to_string(), '@', price.to_string()]),
-                                 data.EMPTY_SET,
-                                 data.EMPTY_SET,
-                                 postings
-                                 ))
-        return Shoppingbag
-
-    def Panic(self, sale, lots):
-        # OMG, IT is happening!!
-
-        Doom = []
-        for idx, row in sale.iterrows():
-            # continue # debugging
-            currency = row['currency']
-            currency_IBcommision = row['ibCommissionCurrency']
-            symbol = row['symbol']
-            proceeds = amount.Amount(round(row['proceeds'],2), currency)
-            commission = amount.Amount(
-                (round(row['ibCommission'],2)), currency_IBcommision)
-            quantity = amount.Amount(row['quantity'], self.mapSymbol(symbol))
-            price = amount.Amount(round(row['tradePrice'],2), currency)
-            text = row['description']
-            date = row['dateTime'].date()
-            number_per = D(row['tradePrice'])
-            currency_cost = currency
-
-            # Closed lot rows (potentially multiple) follow sell row
-            lotpostings = []
-            sum_lots_quantity = 0
-            # mylots: lots closed by sale 'row'
-            # symbol must match; begin at the row after the sell row
-            # we do not know the number of lot rows; stop iteration if quantity is enough
-            mylots = lots[(lots['symbol'] == row['symbol'])
-                          & (lots.index > idx)]
-            for li, clo in mylots.iterrows():
-                sum_lots_quantity += clo['quantity']
-                if sum_lots_quantity > -row['quantity']:
-                    # oops, too many lots (warning issued below)
-                    break
-
-                cost = position.CostSpec(
-                    number_per=0 if self.suppressClosedLotPrice else round(
-                        clo['tradePrice'], 2),
-                    number_total=None,
-                    currency=clo['currency'],
-                    date=clo['openDateTime'].date(),
-                    label=None,
-                    merge=False)
-
-                lotpostings.append(data.Posting(self.getAssetAccount(symbol),
-                                                amount.Amount(-clo['quantity'], clo['symbol']), cost, price, None, None))
-
-                if sum_lots_quantity == -row['quantity']:
-                    # Exact match is expected:
-                    # all lots found for this sell transaction
-                    break
-
-            if sum_lots_quantity != -row['quantity']:
-                warnings.warn(f"Lots matching failure: sell index={idx}")
-
-            postings = [
-                # data.Posting(self.getAssetAccount(symbol),  # this first posting is probably wrong
-                # quantity, None, price, None, None),
-                data.Posting(self.getLiquidityAccount(currency),
-                             proceeds, None, None, None, None)
-            ] +  \
-                lotpostings + \
-                [data.Posting(self.getPNLAccount(symbol),
-                              None, None, None, None, None),
-                 data.Posting(self.getLiquidityAccount(currency_IBcommision),
-                              commission, None, None, None, None),
-                 data.Posting(self.getFeesAccount(currency_IBcommision),
-                              minus(commission), None, None, None, None)
-                 ]
-
-            Doom.append(
-                data.Transaction(data.new_metadata('Buy', 0),
-                                 date,
-                                 self.flag,
-                                 self.mapSymbol(symbol),     # payee
-                                 ' '.join(
-                                     ['SELL', quantity.to_string(), '@', price.to_string()]),
-                                 data.EMPTY_SET,
-                                 data.EMPTY_SET,
-                                 postings
-                                 ))
-        return Doom
-
-    def Balances(self, cr):
-        # generate Balance statements from IBKR Cash reports
-        # balances
-        crTransactions = []
-        for idx, row in cr.iterrows():
-            currency = row['currency']
-            if currency == 'BASE_SUMMARY':
-                continue  # this is a summary balance that is not needed for beancount
-            amount_ = amount.Amount(row['endingCash'].__round__(2), currency)
-
-            # make the postings. two for deposits
-            postings = [data.Posting(self.depositAccount,
-                                     -amount_, None, None, None, None),
-                        data.Posting(self.getLiquidityAccount(currency),
-                                     amount_, None, None, None, None)
-                        ]
-            meta = data.new_metadata('balance', 0)
-
-            crTransactions.append(data.Balance(
-                meta,
-                row['toDate'] + timedelta(days=1),  # see tariochtools EC imp.
-                self.getLiquidityAccount(currency),
-                amount_,
-                None,
-                None))
-        return crTransactions
-
-
-def CollapseTradeSplits(tr):
-    # to be implemented
-    """
-    This function collapses two trades into once if they have same date,symbol
-    and trade price. IB sometimes splits up trades.
-    """
-    pass
-
-
-def isForex(symbol):
-    # retruns True if a transaction is a forex transaction.
-    b = re.search("(\w{3})[.](\w{3})", symbol)  # find something lile "USD.CHF"
-    if b == None:  # no forex transaction, rather a normal stock transaction
-        return False
-    else:
+            root = ET.parse(filepath).getroot()
+        except ET.ParseError:
+            return False
+        if root.tag != _FLEX_ROOT_TAG:
+            return False
+        if self._query_name:
+            return root.get("queryName") == self._query_name
         return True
 
+    def account(self, filepath: str) -> str:
+        return self._account
 
-def getForexCurrencies(symbol):
-    b = re.search("(\w{3})[.](\w{3})", symbol)
-    c = b.groups()
-    return [c[0], c[1]]
+    def date(self, filepath: str) -> date | None:
+        """Return the report closing date from the first non-summary CashReport row."""
+        try:
+            statement = _parse_flex_file(filepath)
+        except Exception:
+            return None
+        for stmt in statement.FlexStatements:
+            for cr in stmt.CashReport:
+                if str(cr.currency) != "BASE_SUMMARY":
+                    return cr.toDate
+        return None
 
+    def extract(self, filepath: str, existing: list) -> list:
+        """Parse the FlexQuery XML and return beancount directives."""
+        try:
+            statement = _parse_flex_file(filepath)
+        except Exception as exc:
+            logger.error("IBKRImporter: failed to parse {}: {}", filepath, exc)
+            return []
 
-class InvalidFormatError(Exception):
-    pass
+        entries: list = []
+        for stmt in statement.FlexStatements:
+            entries.extend(self._trades(stmt.Trades, filepath))
+            entries.extend(self._cash_transactions(stmt.CashTransactions, filepath))
+            entries.extend(self._balances(stmt.CashReport))
+        return entries
 
+    # ------------------------------------------------------------------
+    # Trades
+    # ------------------------------------------------------------------
 
-def fmt_number_de(value: str) -> Decimal:
-    # a fix for region specific number formats
-    thousands_sep = '.'
-    decimal_sep = ','
+    def _trades(self, trades, filepath: str) -> list:
+        """Dispatch trade rows to forex or stock handlers."""
+        all_trades = list(trades)
+        forex_trades = [(i, t) for i, t in enumerate(all_trades) if _is_forex(t.symbol)]
+        stock_trades = [
+            (i, t) for i, t in enumerate(all_trades) if not _is_forex(t.symbol)
+        ]
 
-    return Decimal(value.replace(thousands_sep, '').replace(decimal_sep, '.'))
+        entries: list = []
+        for _, trx in forex_trades:
+            try:
+                entries.append(self._forex_trade(trx, filepath))
+            except Exception as exc:
+                logger.warning("IBKRImporter: skipping forex trade {}: {}", trx.symbol, exc)
 
+        entries.extend(self._stock_trades(stock_trades, filepath))
+        return entries
 
-def DecimalOrZero(value):
-    # for string to number conversion with empty strings
-    try:
-        return Decimal(value)
-    except:
-        return Decimal(0.0)
+    def _forex_trade(self, trx, filepath: str) -> data.Transaction:
+        curr_prim, curr_sec = _forex_currencies(trx.symbol)
+        quantity = amount.Amount(round(trx.quantity, 2), curr_prim)
+        proceeds = amount.Amount(round(trx.proceeds, 2), curr_sec)
+        price = amount.Amount(trx.tradePrice, curr_sec)
+        commission = amount.Amount(round(trx.ibCommission, 2), trx.ibCommissionCurrency)
+        buysell = trx.buySell.name
 
+        postings = [
+            data.Posting(
+                self._liquidity_account(curr_prim), quantity, None, price, None, None
+            ),
+            data.Posting(
+                self._liquidity_account(curr_sec), proceeds, None, None, None, None
+            ),
+            data.Posting(
+                self._liquidity_account(trx.ibCommissionCurrency),
+                commission,
+                None,
+                None,
+                None,
+                None,
+            ),
+            data.Posting(
+                self._fees_account_name(trx.ibCommissionCurrency),
+                minus(commission),
+                None,
+                None,
+                None,
+                None,
+            ),
+        ]
+        return data.Transaction(
+            data.new_metadata(filepath, 0),
+            trx.tradeDate,
+            "*",
+            trx.symbol,
+            f"{buysell} {quantity.to_string()} @ {price.to_string()}",
+            data.EMPTY_SET,
+            data.EMPTY_SET,
+            postings,
+        )
 
-def AmountAdd(A1, A2):
-    # add two amounts
-    if A1.currency == A2.currency:
-        quant = A1.number+A2.number
-        return amount.Amount(quant, A1.currency)
-    else:
-        raise ('Cannot add amounts of differnent currencies: {} and {}'.format(
-            A1.currency, A1.currency))
+    def _stock_trades(self, indexed_trades: list, filepath: str) -> list:
+        """Process stock execution trades; match closed lots to each sell."""
+        executions = [
+            (i, t) for i, t in indexed_trades if t.levelOfDetail == "EXECUTION"
+        ]
+        closed_lots = [
+            (i, t) for i, t in indexed_trades if t.levelOfDetail == "CLOSED_LOT"
+        ]
 
+        entries: list = []
+        for exec_idx, trx in executions:
+            try:
+                if trx.buySell in (BuySell.BUY, BuySell.CANCELBUY):
+                    entries.append(self._buy_shares(trx, filepath))
+                elif trx.buySell in (BuySell.SELL, BuySell.CANCELSELL):
+                    my_lots = [
+                        lot
+                        for lot_idx, lot in closed_lots
+                        if lot.symbol == trx.symbol and lot_idx > exec_idx
+                    ]
+                    entries.append(self._sell_shares(trx, my_lots, filepath))
+            except Exception as exc:
+                logger.warning(
+                    "IBKRImporter: skipping stock trade {} on {}: {}", trx.symbol, trx.dateTime, exc
+                )
+        return entries
 
-def minus(A):
-    # a minus operator
-    return amount.Amount(-A.number, A.currency)
+    def _buy_shares(self, trx, filepath: str) -> data.Transaction:
+        symbol = self._map_symbol(trx.symbol)
+        currency = trx.currency
+        quantity = amount.Amount(trx.quantity, symbol)
+        price = amount.Amount(trx.tradePrice, currency)
+        proceeds = amount.Amount(round(trx.proceeds, 2), currency)
+        commission = amount.Amount(round(trx.ibCommission, 2), trx.ibCommissionCurrency)
+
+        cost = position.CostSpec(
+            number_per=price.number,
+            number_total=None,
+            currency=currency,
+            date=trx.tradeDate,
+            label=None,
+            merge=False,
+        )
+        postings = [
+            data.Posting(self._asset_account(symbol), quantity, cost, None, None, None),
+            data.Posting(
+                self._liquidity_account(currency), proceeds, None, None, None, None
+            ),
+            data.Posting(
+                self._liquidity_account(trx.ibCommissionCurrency),
+                commission,
+                None,
+                None,
+                None,
+                None,
+            ),
+            data.Posting(
+                self._fees_account_name(trx.ibCommissionCurrency),
+                minus(commission),
+                None,
+                None,
+                None,
+                None,
+            ),
+        ]
+        return data.Transaction(
+            data.new_metadata(filepath, 0),
+            trx.dateTime.date(),
+            "*",
+            symbol,
+            f"BUY {quantity.to_string()} @ {price.to_string()}",
+            data.EMPTY_SET,
+            data.EMPTY_SET,
+            postings,
+        )
+
+    def _sell_shares(self, trx, lots: list, filepath: str) -> data.Transaction:
+        symbol = self._map_symbol(trx.symbol)
+        currency = trx.currency
+        proceeds = amount.Amount(round(trx.proceeds, 2), currency)
+        price = amount.Amount(round(trx.tradePrice, 2), currency)
+        quantity = amount.Amount(trx.quantity, symbol)
+        commission = amount.Amount(round(trx.ibCommission, 2), trx.ibCommissionCurrency)
+
+        lot_postings: list = []
+        sum_qty = D("0")
+        for lot in lots:
+            sum_qty += lot.quantity
+            if sum_qty > -trx.quantity:
+                logger.warning(
+                    "IBKRImporter: lot quantity over-match for sell {} on {}", symbol, trx.dateTime
+                )
+                break
+            cost_price = (
+                D("0") if self._suppress_lot_price else D(str(round(lot.tradePrice, 2)))
+            )
+            cost = position.CostSpec(
+                number_per=cost_price,
+                number_total=None,
+                currency=lot.currency,
+                date=lot.openDateTime.date(),
+                label=None,
+                merge=False,
+            )
+            lot_postings.append(
+                data.Posting(
+                    self._asset_account(symbol),
+                    amount.Amount(-lot.quantity, symbol),
+                    cost,
+                    price,
+                    None,
+                    None,
+                )
+            )
+            if sum_qty == -trx.quantity:
+                break
+
+        if sum_qty != -trx.quantity:
+            logger.warning(
+                "IBKRImporter: lot quantity mismatch for sell {} on {}: lots total {}, expected {}",
+                symbol, trx.dateTime, sum_qty, -trx.quantity,
+            )
+
+        postings = (
+            [
+                data.Posting(
+                    self._liquidity_account(currency), proceeds, None, None, None, None
+                )
+            ]
+            + lot_postings
+            + [
+                data.Posting(self._pnl_account(symbol), None, None, None, None, None),
+                data.Posting(
+                    self._liquidity_account(trx.ibCommissionCurrency),
+                    commission,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+                data.Posting(
+                    self._fees_account_name(trx.ibCommissionCurrency),
+                    minus(commission),
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            ]
+        )
+        return data.Transaction(
+            data.new_metadata(filepath, 0),
+            trx.dateTime.date(),
+            "*",
+            symbol,
+            f"SELL {quantity.to_string()} @ {price.to_string()}",
+            data.EMPTY_SET,
+            data.EMPTY_SET,
+            postings,
+        )
+
+    # ------------------------------------------------------------------
+    # Cash transactions
+    # ------------------------------------------------------------------
+
+    def _cash_transactions(self, cash_txns, filepath: str) -> list:
+        """Accumulate cash transaction rows by type, then emit beancount entries."""
+        div_buckets: dict[tuple, dict] = {}
+        roc_rows: list = []
+        deposit_rows: list = []
+        interest_rows: list = []
+        interest_wht_rows: list = []
+        fee_rows: list = []
+
+        simple_dispatch: dict = {
+            CashAction.DEPOSITWITHDRAW: deposit_rows,
+            CashAction.BROKERINTRCVD: interest_rows,
+            CashAction.BROKERINTPAID: interest_rows,
+            CashAction.FEES: fee_rows,
+        }
+        for trx in cash_txns:
+            self._sort_cash_txn(
+                trx, div_buckets, roc_rows, interest_wht_rows, simple_dispatch
+            )
+
+        return (
+            self._emit_dividends(div_buckets, roc_rows, filepath)
+            + self._emit_deposits(deposit_rows, filepath)
+            + self._emit_safe(interest_rows, self._interest, "interest", filepath)
+            + self._emit_safe(
+                interest_wht_rows, self._interest_wht, "interest WHT", filepath
+            )
+            + self._emit_safe(fee_rows, self._fee, "fee", filepath)
+        )
+
+    def _sort_cash_txn(
+        self,
+        trx,
+        div_buckets: dict,
+        roc_rows: list,
+        interest_wht_rows: list,
+        simple_dispatch: dict,
+    ) -> None:
+        """Route one cash transaction row into the appropriate accumulator."""
+        t = trx.type
+        if t in (CashAction.DIVIDEND, CashAction.PAYMENTINLIEU):
+            self._sort_dividend(trx, t, div_buckets, roc_rows)
+        elif t == CashAction.WHTAX:
+            self._sort_wht(trx, div_buckets, interest_wht_rows)
+        elif t in simple_dispatch:
+            simple_dispatch[t].append(trx)
+        else:
+            logger.warning("IBKRImporter: unrecognised CashAction type: {!r}", t)
+
+    def _sort_dividend(
+        self, trx, t: CashAction, div_buckets: dict, roc_rows: list
+    ) -> None:
+        """Accumulate a DIVIDEND or PAYMENTINLIEU row."""
+        if _ROC_STR in (trx.description or ""):
+            roc_rows.append(trx)
+        else:
+            key = (trx.symbol, trx.reportDate, t)
+            div_buckets.setdefault(key, {"div": None, "wht": None})["div"] = trx
+
+    def _sort_wht(self, trx, div_buckets: dict, interest_wht_rows: list) -> None:
+        """Match a WHTAX row to its dividend bucket, or route to interest WHT list."""
+        wht_type = _wht_div_type(trx.description or "")
+        if wht_type == "interest":
+            interest_wht_rows.append(trx)
+        elif wht_type is not None:
+            key = (trx.symbol, trx.reportDate, wht_type)
+            div_buckets.setdefault(key, {"div": None, "wht": None})["wht"] = trx
+        else:
+            logger.warning(
+                "IBKRImporter: unrecognised WHT description: {!r}", trx.description or ""
+            )
+
+    def _emit_dividends(self, div_buckets: dict, roc_rows: list, filepath: str) -> list:
+        """Emit Transaction entries for all accumulated dividends and ROC rows."""
+        entries: list = []
+        for key, bucket in div_buckets.items():
+            if bucket["div"] is None:
+                logger.warning("IBKRImporter: WHT row has no matching dividend: {}", key)
+                continue
+            try:
+                entries.append(self._dividend(bucket["div"], bucket["wht"], filepath))
+            except Exception as exc:
+                logger.warning("IBKRImporter: skipping dividend {}: {}", key, exc)
+        for trx in roc_rows:
+            try:
+                entries.append(self._dividend(trx, None, filepath))
+            except Exception as exc:
+                logger.warning("IBKRImporter: skipping Return of Capital {}: {}", trx.symbol, exc)
+        return entries
+
+    def _emit_deposits(self, rows: list, filepath: str) -> list:
+        """Emit deposit/withdrawal entries."""
+        return [self._deposit(trx, filepath) for trx in rows]
+
+    def _emit_safe(self, rows: list, method, label: str, filepath: str) -> list:
+        """Call *method(trx, filepath)* for each row; warn and continue on error."""
+        entries: list = []
+        for trx in rows:
+            try:
+                entries.append(method(trx, filepath))
+            except Exception as exc:
+                logger.warning("IBKRImporter: skipping {} entry: {}", label, exc)
+        return entries
+
+    # ------------------------------------------------------------------
+    # Transaction builders
+    # ------------------------------------------------------------------
+
+    def _dividend(self, trx, wht_trx, filepath: str) -> data.Transaction:
+        symbol = self._map_symbol(trx.symbol)
+        currency = trx.currency
+        div_amt = amount.Amount(trx.amount, currency)
+
+        desc = trx.description or ""
+
+        # ISIN from description parentheses, e.g. "(US9229083632)"
+        isin = _ROC_STR if _ROC_STR in desc else ""
+        if not isin:
+            isin_match = _RE_ISIN.search(desc)
+            isin = isin_match.group(1) if isin_match else ""
+
+        # Per-share amount, e.g. "0.8700 USD PER SHARE"
+        pershare_match = _RE_PER_SHARE.search(desc)
+        pershare = pershare_match.group("amount") if pershare_match else ""
+
+        in_lieu = bool(_RE_WHT_PIL.match(desc))
+        narration = f"Dividend {symbol}" + (" in lieu" if in_lieu else "")
+
+        postings = [
+            data.Posting(
+                self._div_income_account(currency, symbol),
+                minus(div_amt),
+                None,
+                None,
+                None,
+                None,
+            ),
+        ]
+
+        if wht_trx is not None:
+            if wht_trx.currency != currency:
+                logger.warning(
+                    "IBKRImporter: dividend/WHT currency mismatch for {}: {} vs {} — skipping WHT",
+                    symbol, currency, wht_trx.currency,
+                )
+            else:
+                wht_amt = amount.Amount(wht_trx.amount, wht_trx.currency)
+                postings.extend(
+                    [
+                        data.Posting(
+                            self._wht_account_name(symbol),
+                            minus(wht_amt),
+                            None,
+                            None,
+                            None,
+                            None,
+                        ),
+                        data.Posting(
+                            self._liquidity_account(currency),
+                            amount_add(div_amt, wht_amt),
+                            None,
+                            None,
+                            None,
+                            None,
+                        ),
+                    ]
+                )
+        else:
+            postings.append(
+                data.Posting(
+                    self._liquidity_account(currency), div_amt, None, None, None, None
+                )
+            )
+
+        meta = data.new_metadata(filepath, 0, {"isin": isin, "per_share": pershare})
+        return data.Transaction(
+            meta,
+            trx.reportDate,
+            "*",
+            symbol,
+            narration,
+            data.EMPTY_SET,
+            data.EMPTY_SET,
+            postings,
+        )
+
+    def _interest(self, trx, filepath: str) -> data.Transaction:
+        currency = trx.currency
+        amt = amount.Amount(trx.amount, currency)
+        postings = [
+            data.Posting(
+                self._interest_account(currency), minus(amt), None, None, None, None
+            ),
+            data.Posting(
+                self._liquidity_account(currency), amt, None, None, None, None
+            ),
+        ]
+        return data.Transaction(
+            data.new_metadata(filepath, 0),
+            trx.reportDate,
+            "*",
+            "IB",
+            trx.description or f"Interest {currency}",
+            data.EMPTY_SET,
+            data.EMPTY_SET,
+            postings,
+        )
+
+    def _interest_wht(self, trx, filepath: str) -> data.Transaction:
+        currency = trx.currency
+        amt = amount.Amount(trx.amount, currency)
+        postings = [
+            data.Posting(
+                self._wht_account_name(currency), minus(amt), None, None, None, None
+            ),
+            data.Posting(
+                self._liquidity_account(currency), amt, None, None, None, None
+            ),
+        ]
+        return data.Transaction(
+            data.new_metadata(filepath, 0),
+            trx.reportDate,
+            "*",
+            "IB",
+            trx.description or f"Withholding tax on interest {currency}",
+            data.EMPTY_SET,
+            data.EMPTY_SET,
+            postings,
+        )
+
+    def _fee(self, trx, filepath: str) -> data.Transaction:
+        currency = trx.currency
+        amt = amount.Amount(trx.amount, currency)
+        month_match = _RE_FEE_MONTH.search(trx.description or "")
+        month = month_match.group(0) if month_match else trx.description or ""
+        postings = [
+            data.Posting(
+                self._fees_account_name(currency), minus(amt), None, None, None, None
+            ),
+            data.Posting(
+                self._liquidity_account(currency), amt, None, None, None, None
+            ),
+        ]
+        return data.Transaction(
+            data.new_metadata(filepath, 0),
+            trx.reportDate,
+            "*",
+            "IB",
+            f"Fee {currency} {month}".strip(),
+            data.EMPTY_SET,
+            data.EMPTY_SET,
+            postings,
+        )
+
+    def _deposit(self, trx, filepath: str) -> data.Transaction:
+        if not self._deposit_account:
+            logger.warning(
+                "IBKRImporter: deposit_account not configured; "
+                "posting deposit/withdrawal to Equity:Opening-Balances"
+            )
+        deposit_acct = self._deposit_account or "Equity:Opening-Balances"
+        currency = trx.currency
+        amt = amount.Amount(trx.amount, currency)
+        postings = [
+            data.Posting(deposit_acct, minus(amt), None, None, None, None),
+            data.Posting(
+                self._liquidity_account(currency), amt, None, None, None, None
+            ),
+        ]
+        return data.Transaction(
+            data.new_metadata(filepath, 0),
+            trx.reportDate,
+            "*",
+            "self",
+            "deposit / withdrawal",
+            data.EMPTY_SET,
+            data.EMPTY_SET,
+            postings,
+        )
+
+    # ------------------------------------------------------------------
+    # Balances
+    # ------------------------------------------------------------------
+
+    def _balances(self, cash_report) -> list:
+        """Emit one Balance directive per non-summary CashReport row."""
+        entries: list = []
+        for cr in cash_report:
+            if str(cr.currency) == "BASE_SUMMARY":
+                continue
+            try:
+                currency = cr.currency
+                bal_amt = amount.Amount(round(cr.endingCash, 2), currency)
+                entries.append(
+                    data.Balance(
+                        data.new_metadata("balance", 0),
+                        cr.toDate + timedelta(days=1),
+                        self._liquidity_account(currency),
+                        bal_amt,
+                        None,
+                        None,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("IBKRImporter: skipping balance entry: {}", exc)
+        return entries
+
+    # ------------------------------------------------------------------
+    # Account name helpers
+    # ------------------------------------------------------------------
+
+    def _liquidity_account(self, currency: str) -> str:
+        return f"{self._account}:{currency}"
+
+    def _asset_account(self, symbol: str) -> str:
+        return f"{self._account}:{symbol}"
+
+    def _div_income_account(self, currency: str, symbol: str) -> str:
+        if self._div_account:
+            return self._div_account
+        return (
+            f"{self._account.replace('Assets', 'Income')}:{symbol}:{self._div_suffix}"
+        )
+
+    def _interest_account(self, currency: str) -> str:
+        return (
+            f"{self._account.replace('Assets', 'Income')}"
+            f":{self._interest_suffix}:{currency}"
+        )
+
+    def _wht_account_name(self, identifier: str) -> str:
+        """WHT account for a symbol (dividends) or currency (interest WHT)."""
+        if self._wht_account:
+            return f"{self._wht_account}:{identifier}"
+        return f"{self._account.replace('Assets', 'Expenses')}:WHT:{identifier}"
+
+    def _fees_account_name(self, currency: str) -> str:
+        if self._fees_account:
+            return self._fees_account
+        return (
+            f"{self._account.replace('Assets', 'Expenses')}"
+            f":{self._fees_suffix}:{currency}"
+        )
+
+    def _pnl_account(self, symbol: str) -> str:
+        return (
+            f"{self._account.replace('Assets', 'Income')}:{symbol}:{self._pnl_suffix}"
+        )
+
+    # ------------------------------------------------------------------
+    # Symbol normalisation
+    # ------------------------------------------------------------------
+
+    def _map_symbol(self, symbol: str) -> str:
+        """Normalise an IBKR symbol, then apply user-configured remapping.
+
+        Auto-cleanup (applied in order):
+        1. Strip trailing ``z`` that IBKR appends to certain bond symbols.
+        2. Strip exchange suffix — everything from the last ``.`` onward
+           (e.g. ``VWRL.BATS`` -> ``VWRL``).
+
+        Explicit entries in *symbol_map* take priority over auto-cleanup.
+        """
+        s = symbol.rstrip("z")
+        if "." in s:
+            s = s.rsplit(".", 1)[0]
+        return self._symbol_map.get(s, s)
