@@ -132,5 +132,4 @@ dependencies:
     - urllib3==1.25.8
     - wcwidth==0.1.8
     - werkzeug==1.0.0
-prefix: /home/drnuke/miniconda3/envs/Bean
 

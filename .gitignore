@@ -136,3 +136,7 @@ pyrightconfig.json
 
 # cache pickl
 *.pkl
+
+# no bank statements
+*.csv
+*.xml

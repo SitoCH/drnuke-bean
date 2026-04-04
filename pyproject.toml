@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drnuke-bean"
+version = "0.1.0"
+description = "Dr Nuke's beancount arsenal"
+requires-python = ">=3.12"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=src/drnukebean --cov-report=term-missing"
+
+[tool.coverage.run]
+branch = true
+source = ["src/drnukebean"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "S", "B"]
+ignore = [
+    "S101",  # assert statements are fine in tests and internal helpers
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S106"]  # asserts and hardcoded passwords ok in tests

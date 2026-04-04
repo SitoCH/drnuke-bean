@@ -12,17 +12,22 @@ Supported entry types:
 Each transaction is single-legged (account posting only). The second leg is
 expected to be filled by the deterministic fixes function and/or smart_importer
 in the pipeline downstream.
+
+The EBICS download machinery lives in zkb_ebics.py (make_zkb_setup, ZKBCredentials).
+This file is intentionally limited to pure XML parsing.
 """
 
 from __future__ import annotations
 
 import functools
-import warnings
 import xml.etree.ElementTree as ET
 from datetime import date, timedelta
 from pathlib import Path
 
+from loguru import logger
+
 import beangulp
+
 from beancount.core import data
 from beancount.core.amount import Amount
 from beancount.core.number import Decimal
@@ -54,9 +59,8 @@ def _signed(number: Decimal, cdt_dbt: str) -> Decimal:
         return number
     if cdt_dbt == "DBIT":
         return -number
-    warnings.warn(
-        f"ZKBCamtImporter: unexpected CdtDbtInd value {cdt_dbt!r}; treating as credit",
-        stacklevel=2,
+    logger.warning(
+        "ZKBCamtImporter: unexpected CdtDbtInd value {!r}; treating as credit", cdt_dbt
     )
     return number
 
@@ -86,10 +90,10 @@ class ZKBCamtImporter(beangulp.Importer):
     ) -> None:
         self._iban = iban.replace(" ", "").replace("-", "")
         if not (15 <= len(self._iban) <= 34):
-            warnings.warn(
-                f"ZKBCamtImporter: IBAN {self._iban!r} has unusual length "
-                f"({len(self._iban)}); check for typos",
-                stacklevel=2,
+            logger.warning(
+                "ZKBCamtImporter: IBAN {!r} has unusual length ({}); check for typos",
+                self._iban,
+                len(self._iban),
             )
         self._account = account
         self._balance_account = (
@@ -137,9 +141,7 @@ class ZKBCamtImporter(beangulp.Importer):
         try:
             root = _parse(filepath)
         except ET.ParseError as exc:
-            warnings.warn(
-                f"ZKBCamtImporter: XML parse error in {filepath}: {exc}", stacklevel=2
-            )
+            logger.warning("ZKBCamtImporter: XML parse error in {}: {}", filepath, exc)
             return []
 
         stmt = root.find("ns:BkToCstmrStmt/ns:Stmt", _NS_MAP)
@@ -204,9 +206,8 @@ class ZKBCamtImporter(beangulp.Importer):
                 ]
             return [self._generic_txn(ntry, filepath, index)]
         except (ValueError, AttributeError) as exc:
-            warnings.warn(
-                f"ZKBCamtImporter: skipping entry {index} in {filepath}: {exc}",
-                stacklevel=2,
+            logger.warning(
+                "ZKBCamtImporter: skipping entry {} in {}: {}", index, filepath, exc
             )
             return []
 

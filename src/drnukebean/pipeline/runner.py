@@ -98,6 +98,7 @@ def run_all(
     statement_dest: str | Path | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    predict_lookback_days: int | None = 730,
 ) -> None:
     """
     Run all (or a named subset of) import pipelines.
@@ -133,6 +134,9 @@ def run_all(
                         --from takes precedence. Defaults to last month.
         date_to:        End of the report period (first day of month). CLI
                         --to takes precedence. Defaults to date_from.
+        predict_lookback_days: Limit smart_importer training data to entries at most
+                        this many days old. None loads the full ledger. Default: 730
+                        (two years).
     """
     dry_run, name_filter = _resolve_cli(dry_run)
     date_from, date_to = _resolve_date_range(date_from, date_to)
@@ -145,7 +149,7 @@ def run_all(
     logger.info("date range: {} -> {}", date_from, date_to)
     active = [e["name"] for e in pipelines if not name_filter or e["name"] in name_filter]
     logger.info("importers: [{}]", ", ".join(active))
-    existing = _load_existing(pipelines, ledger)
+    existing = _load_existing(pipelines, ledger, predict_lookback_days)
     dest_root = Path(statement_dest).expanduser() if statement_dest else None
 
     for entry in pipelines:
@@ -246,13 +250,34 @@ def _make_dry_path(dry_run_file: str | None) -> Path:
     return Path(tmp.name)
 
 
-def _load_existing(pipelines: list[dict], ledger: str | Path | None) -> list:
-    """Load existing beancount entries if any pipeline entry uses smart_importer."""
+def _load_existing(
+    pipelines: list[dict],
+    ledger: str | Path | None,
+    predict_lookback_days: int | None = 730,
+) -> list:
+    """Load existing beancount entries if any pipeline entry uses smart_importer.
+
+    Args:
+        predict_lookback_days: Limit training data to entries at most this many days
+                               old.  None means no limit (load full ledger).
+                               Default: 730 (two years).
+    """
     if not ledger or not any(p.get("predict", False) for p in pipelines):
         return []
     from beancount import loader  # avoid hard dependency when predict is unused
 
     entries, _, _ = loader.load_file(str(Path(ledger).expanduser()))
+    if predict_lookback_days is not None:
+        cutoff = date.today() - timedelta(days=predict_lookback_days)
+        # Only apply the date filter to Transaction and Price entries.
+        # Open/Close and other structural directives must always be present
+        # so that smart_importer can build a consistent open-accounts map
+        # without hitting a KeyError when a Close has no matching Open in
+        # the window.
+        entries = [
+            e for e in entries
+            if not isinstance(e, (data.Transaction, data.Price)) or e.date >= cutoff
+        ]
     return entries
 
 
