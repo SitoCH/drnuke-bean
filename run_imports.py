@@ -65,7 +65,6 @@ from transaction_fixes import (
 _zkb = ZKBCamtImporter(
     iban=cfg.ZKB_IBAN,
     account='Assets:Bank:ZKB:CHF',
-    balance_account='Assets:Taxable:ZKB:PF:CHF',
     currency='CHF',
 )
 
@@ -80,11 +79,25 @@ _revolut = RevolutImporter(
     currency='CHF',
 )
 
+# Map each IBKR account ID (visible in the FlexQuery XML accountId attribute)
+# to its beancount account configuration.  Required key: 'root'.  Optional key:
+# 'deposit_from' -- the counterpart account for cash deposits / withdrawals.
+# When 'deposit_from' is absent, deposits are emitted with a single IBKR leg
+# and flag '!' for manual completion.
+# Every account ID present in the FlexQuery response must be listed here;
+# an unlisted ID causes a loud RuntimeError.
+_IBKR_ACCOUNT_MAP = {
+    'U1234567': {
+        'root': 'Assets:Invest:IBKR:Alice',
+        'deposit_from': 'Assets:Bank:ZKB:CHF',
+    },
+}
+
 _ibkr = IBKRImporter(
     account='Assets:Invest:IBKR',
     currency='CHF',
+    account_map=_IBKR_ACCOUNT_MAP,
     wht_account='Expenses:Invest:IBKR:WHT',
-    deposit_account='',   # set to e.g. 'Assets:Bank:ZKB:CHF' to capture deposits
 )
 
 # ---------------------------------------------------------------------------

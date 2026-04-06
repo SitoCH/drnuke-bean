@@ -35,6 +35,7 @@ routing, append semantics, or the fixes/predict pipeline stage.
 
 from __future__ import annotations
 
+import argparse
 import shutil
 import sys
 import tempfile
@@ -80,9 +81,22 @@ class FixesWrapper(beangulp.Importer):
 
     def extract(self, filepath: str, existing: list) -> list:
         entries = self._importer.extract(filepath, existing)
-        return [
-            self._fixes_fn(e) if isinstance(e, data.Transaction) else e for e in entries
-        ]
+        result = []
+        for e in entries:
+            if isinstance(e, data.Transaction):
+                fixed = self._fixes_fn(e)
+                if fixed is None:
+                    logger.warning(
+                        "fixes_fn returned None for transaction on {} ({}); "
+                        "entry dropped. Check that fixes_fn always returns the transaction.",
+                        e.date,
+                        e.narration,
+                    )
+                    continue
+                result.append(fixed)
+            else:
+                result.append(e)
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -138,15 +152,24 @@ def run_all(
                         this many days old. None loads the full ledger. Default: 730
                         (two years).
     """
-    dry_run, name_filter = _resolve_cli(dry_run)
-    date_from, date_to = _resolve_date_range(date_from, date_to)
+    dry_run, name_filter, cli_from, cli_to = _parse_cli(dry_run)
+    if name_filter:
+        known = {e["name"] for e in pipelines}
+        unknown = name_filter - known
+        if unknown:
+            _build_parser().error(
+                f"unknown importer(s): {', '.join(sorted(unknown))}"
+                f" -- known: {', '.join(sorted(known))}"
+            )
+    date_from, date_to = _resolve_date_range(cli_from, cli_to, date_from, date_to)
 
     dry_path = None
     if dry_run:
         dry_path = _make_dry_path(dry_run_file)
         logger.info("DRY RUN -- output -> {}", dry_path)
 
-    logger.info("date range: {} -> {}", date_from, date_to)
+    _display_to = (date_to.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    logger.info("date range: {} -> {}", date_from, _display_to)
     active = [e["name"] for e in pipelines if not name_filter or e["name"] in name_filter]
     logger.info("importers: [{}]", ", ".join(active))
     existing = _load_existing(pipelines, ledger, predict_lookback_days)
@@ -163,58 +186,65 @@ def run_all(
 # ---------------------------------------------------------------------------
 
 
-def _parse_month(s: str) -> date:
-    """Parse a YYYY-MM string to the first day of that month."""
-    try:
-        return date.fromisoformat(s + "-01")
-    except ValueError:
-        raise ValueError(f"Invalid month format {s!r}: expected YYYY-MM") from None
-
-
 def _last_month() -> date:
     """Return the first day of the previous calendar month."""
     first_this_month = date.today().replace(day=1)
     return (first_this_month - timedelta(days=1)).replace(day=1)
 
 
-def _resolve_cli(dry_run: bool) -> tuple[bool, set[str]]:
-    """Parse sys.argv for --dry-run, --from, --to, and optional importer name filter.
-
-    --from and --to are stripped together with their values before the name filter
-    is collected, so YYYY-MM strings are never captured as importer names.
-    """
-    args = sys.argv[1:]
-    if "--dry-run" in args:
-        dry_run = True
-        args = [a for a in args if a != "--dry-run"]
-
-    name_args: list[str] = []
-    i = 0
-    while i < len(args):
-        if args[i] in ("--from", "--to") and i + 1 < len(args):
-            i += 2  # consume flag and its value
-        else:
-            name_args.append(args[i])
-            i += 1
-
-    return dry_run, set(name_args)
+def _month_type(s: str) -> date:
+    """argparse type converter for YYYY-MM month strings."""
+    try:
+        return date.fromisoformat(s + "-01")
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"Invalid month format {s!r}: expected YYYY-MM"
+        ) from None
 
 
-def _cli_dates() -> tuple[date | None, date | None]:
-    """Scan sys.argv for --from / --to and return parsed dates (or None)."""
-    args = sys.argv[1:]
-    result: dict[str, date | None] = {"--from": None, "--to": None}
-    i = 0
-    while i < len(args):
-        if args[i] in result and i + 1 < len(args):
-            result[args[i]] = _parse_month(args[i + 1])
-            i += 2
-        else:
-            i += 1
-    return result["--from"], result["--to"]
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="run_imports.py",
+        description="Run beancount import pipelines for the last month (or a given date range).",
+        epilog="Omitting importers runs all configured pipelines.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="write output to a temp file; do not move source files",
+    )
+    parser.add_argument(
+        "--from",
+        dest="date_from",
+        metavar="YYYY-MM",
+        type=_month_type,
+        help="start of the report period (default: last month)",
+    )
+    parser.add_argument(
+        "--to",
+        dest="date_to",
+        metavar="YYYY-MM",
+        type=_month_type,
+        help="end of the report period (default: --from)",
+    )
+    parser.add_argument(
+        "importers",
+        nargs="*",
+        metavar="importer",
+        help="limit to these importers (default: all)",
+    )
+    return parser
+
+
+def _parse_cli(dry_run: bool) -> tuple[bool, set[str], date | None, date | None]:
+    """Parse sys.argv with argparse. Unknown flags cause an error+usage exit automatically."""
+    ns = _build_parser().parse_args()
+    return ns.dry_run or dry_run, set(ns.importers), ns.date_from, ns.date_to
 
 
 def _resolve_date_range(
+    cli_from: date | None,
+    cli_to: date | None,
     date_from: date | None,
     date_to: date | None,
 ) -> tuple[date, date]:
@@ -224,7 +254,6 @@ def _resolve_date_range(
     --to defaults to --from when only --from is given.
     Both default to last month when neither is given.
     """
-    cli_from, cli_to = _cli_dates()
     resolved_from = cli_from if cli_from is not None else date_from
     resolved_to = cli_to if cli_to is not None else date_to
 

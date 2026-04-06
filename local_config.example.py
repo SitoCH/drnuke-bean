@@ -37,7 +37,7 @@ STATEMENT_DEST = Path('/path/to/statements/archive')
 ZKB_IBAN = 'CHxx xxxx xxxx xxxx xxxx x'   # IBAN without spaces also accepted
 
 ZKB_CREDENTIALS = ZKBCredentials(
-    keys_file='/path/to/zkb_keyring.db',   # fintech EBICS keyring file
+    keys_file='/path/to/zkb_keyring.file',   # fintech EBICS keyring file
     passphrase='...',                        # keyring encryption passphrase
     host_id='...',                           # HostID from bank letter
     url='https://...',                       # EBICS server URL from bank letter
@@ -53,3 +53,35 @@ IBKR_TOKEN = '...'         # Flex Web Service token (from IBKR Account Managemen
 IBKR_QUERY_ID = '...'      # numeric Flex Query ID
 IBKR_QUERY_NAME = '...'    # queryName as it appears in the FlexQueryResponse XML;
                             # validated on every download to catch token/ID mismatches
+
+# ---------------------------------------------------------------------------
+# IBKR account map
+# ---------------------------------------------------------------------------
+
+# Maps each IBKR account ID (the accountId attribute in the FlexQuery XML) to
+# its beancount account configuration.
+#
+# Required key:  'root'         -- beancount account root for all positions and
+#                                  cash held in that IBKR account.
+# Optional key:  'deposit_from' -- counterpart account for cash deposits /
+#                                  withdrawals.  When omitted the transaction is
+#                                  emitted with a single IBKR leg and flag '!'
+#                                  so it surfaces in bean-check for manual
+#                                  completion.
+#
+# Every account ID present in the FlexQuery response must appear here;
+# a missing ID causes a RuntimeError at import time.
+#
+# IBKR_ACCOUNT_MAP = None  # single-account mode: all statements -> IBKRImporter(account=...)
+IBKR_ACCOUNT_MAP = {
+    'U1234567': {
+        'root': 'Assets:Invest:IBKR:AccountName1',
+        'deposit_from': 'Assets:Bank:ZKB:CHF',    # funded from ZKB
+    },
+    'U7654321': {
+        'root': 'Assets:Invest:IBKR:AccountName2',
+        # no deposit_from -> deposits flagged '!' for manual annotation
+    },
+}
+
+
