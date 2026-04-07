@@ -140,3 +140,4 @@ pyrightconfig.json
 # no bank statements
 *.csv
 *.xml
+pipeline_sectrets.py
