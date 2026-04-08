@@ -24,7 +24,7 @@ Date range (optional; applies to setup callables only):
 Dry-run vs full run:
     Dry-run  : output appended to a single temp file; source files are NOT archived.
                Repeat as often as needed until output looks clean.
-    Full run : output appended to each importer's own output_file; source files are
+    Full run : output appended to each importer's own bean_output_file; source files are
                moved to statement_dest after successful extraction.
 
 Output writing bypasses beangulp's extract output machinery because that machinery
@@ -37,11 +37,10 @@ from __future__ import annotations
 
 import argparse
 import shutil
-import sys
 import tempfile
+from collections.abc import Callable
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Callable
 
 import beangulp
 from beancount.core import data
@@ -49,7 +48,6 @@ from beancount.parser import printer
 from loguru import logger
 from smart_importer import PredictPostings
 from smart_importer.wrapper import ImporterWrapper
-
 
 # ---------------------------------------------------------------------------
 # FixesWrapper
@@ -122,7 +120,7 @@ def run_all(
                             name        : str             -- used for CLI name-filter
                             importer    : beangulp.Importer
                             source_dir  : str | Path
-                            output_file : str | Path
+                            bean_output_file : str | Path
                         Optional keys:
                             setup       : callable(date_from, date_to) -> None
                                           Runs before identify. Receives the resolved
@@ -152,7 +150,7 @@ def run_all(
                         this many days old. None loads the full ledger. Default: 730
                         (two years).
     """
-    dry_run, name_filter, cli_from, cli_to = _parse_cli(dry_run)
+    dry_run, name_filter = _parse_cli(dry_run)
     if name_filter:
         known = {e["name"] for e in pipelines}
         unknown = name_filter - known
@@ -161,7 +159,7 @@ def run_all(
                 f"unknown importer(s): {', '.join(sorted(unknown))}"
                 f" -- known: {', '.join(sorted(known))}"
             )
-    date_from, date_to = _resolve_date_range(cli_from, cli_to, date_from, date_to)
+    date_from, date_to = _resolve_date_range(date_from, date_to)
 
     dry_path = None
     if dry_run:
@@ -197,9 +195,7 @@ def _month_type(s: str) -> date:
     try:
         return date.fromisoformat(s + "-01")
     except ValueError:
-        raise argparse.ArgumentTypeError(
-            f"Invalid month format {s!r}: expected YYYY-MM"
-        ) from None
+        raise argparse.ArgumentTypeError(f"Invalid month format {s!r}: expected YYYY-MM") from None
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -236,15 +232,19 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _parse_cli(dry_run: bool) -> tuple[bool, set[str], date | None, date | None]:
+def _parse_cli(dry_run: bool) -> tuple[bool, set[str]]:
     """Parse sys.argv with argparse. Unknown flags cause an error+usage exit automatically."""
     ns = _build_parser().parse_args()
-    return ns.dry_run or dry_run, set(ns.importers), ns.date_from, ns.date_to
+    return ns.dry_run or dry_run, set(ns.importers)
+
+
+def _cli_dates() -> tuple[date | None, date | None]:
+    """Return the --from / --to dates from sys.argv, or (None, None) if absent."""
+    ns = _build_parser().parse_args()
+    return ns.date_from, ns.date_to
 
 
 def _resolve_date_range(
-    cli_from: date | None,
-    cli_to: date | None,
     date_from: date | None,
     date_to: date | None,
 ) -> tuple[date, date]:
@@ -254,6 +254,7 @@ def _resolve_date_range(
     --to defaults to --from when only --from is given.
     Both default to last month when neither is given.
     """
+    cli_from, cli_to = _cli_dates()
     resolved_from = cli_from if cli_from is not None else date_from
     resolved_to = cli_to if cli_to is not None else date_to
 
@@ -272,9 +273,7 @@ def _make_dry_path(dry_run_file: str | None) -> Path:
     """Resolve or create the dry-run output file."""
     if dry_run_file:
         return Path(dry_run_file).expanduser()
-    tmp = tempfile.NamedTemporaryFile(
-        prefix="bean_import_dryrun_", suffix=".bean", delete=False
-    )
+    tmp = tempfile.NamedTemporaryFile(prefix="bean_import_dryrun_", suffix=".bean", delete=False)
     tmp.close()
     return Path(tmp.name)
 
@@ -304,7 +303,8 @@ def _load_existing(
         # without hitting a KeyError when a Close has no matching Open in
         # the window.
         entries = [
-            e for e in entries
+            e
+            for e in entries
             if not isinstance(e, (data.Transaction, data.Price)) or e.date >= cutoff
         ]
     return entries
@@ -336,7 +336,7 @@ def _run_entry(
     """Execute the full pipeline for a single importer entry."""
     importer = entry["importer"]
     source_dir = Path(entry["source_dir"]).expanduser()
-    output_file = Path(entry["output_file"]).expanduser()
+    bean_output_file = Path(entry["bean_output_file"]).expanduser()
     setup_fn = entry.get("setup")
     fixes_fn = entry.get("fixes")
     predict = entry.get("predict", False)
@@ -359,7 +359,7 @@ def _run_entry(
             logger.debug("[{}] skipped: {}", name, f.name)
 
     all_entries: list = []
-    dest = dry_path if dry_run else output_file
+    dest = dry_path if dry_run else bean_output_file
     for filepath in matched:
         entries = wrapped.extract(str(filepath), existing)
         if not entries:
@@ -406,9 +406,7 @@ def _append_entries(entries: list, dest: Path, label: str) -> None:
         printer.print_entries(entries, file=fh)
 
 
-def _move_statements(
-    matched: list[Path], importer: beangulp.Importer, dest_root: Path
-) -> None:
+def _move_statements(matched: list[Path], importer: beangulp.Importer, dest_root: Path) -> None:
     """
     Move each matched source file to <dest_root>/<account-as-path>/<filename>.
 

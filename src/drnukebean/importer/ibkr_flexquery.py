@@ -47,15 +47,15 @@ from __future__ import annotations
 
 import sys
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Callable, cast
+from typing import cast
 
 import diskcache
-from loguru import logger
-
 from ibflex import client
 from ibflex.client import ResponseCodeError
+from loguru import logger
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -70,9 +70,7 @@ def _extract_statement_dates(raw: str | bytes) -> tuple[str | None, str | None]:
     IBKR encodes dates as YYYYMMDD; returns ISO strings (YYYY-MM-DD) or None.
     """
     try:
-        root = ET.fromstring(
-            raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace")
-        )
+        root = ET.fromstring(raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace"))
         for stmt in root.iter("FlexStatement"):
             from_raw = stmt.get("fromDate")
             to_raw = stmt.get("toDate")
@@ -89,18 +87,14 @@ def _extract_statement_dates(raw: str | bytes) -> tuple[str | None, str | None]:
 def _seconds_until_midnight() -> float:
     """Seconds remaining until the next calendar-day boundary."""
     now = datetime.now()
-    midnight = (now + timedelta(days=1)).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
+    midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     return (midnight - now).total_seconds()
 
 
 def _extract_query_name(raw: str | bytes) -> str | None:
     """Return the ``queryName`` attribute from the XML root element, or None."""
     try:
-        root = ET.fromstring(
-            raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace")
-        )
+        root = ET.fromstring(raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace"))
         return root.get("queryName")
     except ET.ParseError:
         return None
@@ -192,7 +186,8 @@ def make_ibkr_setup(
             logger.warning(
                 "IBKR FlexQuery: requested date range ({} -> {}) is ignored; "
                 "the report period is determined by the portal configuration.",
-                date_from, date_to,
+                date_from,
+                date_to,
             )
 
         dest = Path(dest_dir).expanduser()

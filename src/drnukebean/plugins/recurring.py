@@ -1,5 +1,5 @@
 """
-A beancount plugin to create repeatedly the same transaction, 
+A beancount plugin to create repeatedly the same transaction,
 e.g. the monthly tax liability before the tax bill is issued.
 
 A transaction subject to this plugin needs to have
@@ -11,24 +11,14 @@ A transaction subject to this plugin needs to have
   recurring_times: "12"
 those meta values are direct input for pandas.date_range(), and can be used accordingly.
 
-the plugin must be called with no parameter: 
-plugin "drnukebean.plugins.recurring" 
+the plugin must be called with no parameter:
+plugin "drnukebean.plugins.recurring"
 """
 
-from beancount.core import account as acc
-from beancount.core import account_types
-from beancount.core import data
-from beancount.core.amount import Amount
-from beancount.core.data import Transaction
-from beancount.parser import options
-from decimal import Decimal
-
-import datetime
 import pandas as pd
-import io
-from contextlib import redirect_stdout
+from beancount.core import data
 
-__plugins__ = ['recurring']
+__plugins__ = ["recurring"]
 
 
 def recurring(entries, options_map, config_str):
@@ -36,10 +26,10 @@ def recurring(entries, options_map, config_str):
     new_entries = []
 
     for entry in entries:
-        if isinstance(entry, data.Transaction) and 'recurring_start' in entry.meta:
-            start_date = entry.meta['recurring_start']
-            frequency = entry.meta['recurring_frequency']
-            times = int(entry.meta['recurring_times'])
+        if isinstance(entry, data.Transaction) and "recurring_start" in entry.meta:
+            start_date = entry.meta["recurring_start"]
+            frequency = entry.meta["recurring_frequency"]
+            times = int(entry.meta["recurring_times"])
 
             date_range = pd.date_range(start=start_date, periods=times, freq=frequency)
 
@@ -60,12 +50,20 @@ def recurring(entries, options_map, config_str):
             if any(rounding_errors):
                 last_posting_idx = amounts[-1][0]
                 last_posting_splits = amounts[-1][2]
-                amounts[-1] = (last_posting_idx, amounts[-1][1], [value - rounding_errors[i] for i, value in enumerate(last_posting_splits)])
+                amounts[-1] = (
+                    last_posting_idx,
+                    amounts[-1][1],
+                    [value - rounding_errors[i] for i, value in enumerate(last_posting_splits)],
+                )
 
             # Prepare the meta
-            dropkeys = ['recurring_start', 'recurring_frequency', 'recurring_times']
+            dropkeys = ["recurring_start", "recurring_frequency", "recurring_times"]
             meta = {key: val for key, val in entry.meta.items() if key not in dropkeys}
-            meta.update({'recurring': f"split amounts into {times} chunks, {entry.meta['recurring_frequency']}, original txn date {entry.date.strftime(r'%Y-%m-%d')}"})
+            meta.update(
+                {
+                    "recurring": f"split amounts into {times} chunks, {entry.meta['recurring_frequency']}, original txn date {entry.date.strftime(r'%Y-%m-%d')}"
+                }
+            )
 
             for idx_date, new_date in enumerate(date_range):
                 new_txn = data.Transaction(
@@ -76,7 +74,7 @@ def recurring(entries, options_map, config_str):
                     narration=entry.narration,
                     tags=entry.tags,
                     links=entry.links,
-                    postings=[]
+                    postings=[],
                 )
                 for idx, account, splits in amounts:
                     amount = splits[idx_date]

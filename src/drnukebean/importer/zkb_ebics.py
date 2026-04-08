@@ -58,9 +58,10 @@ from __future__ import annotations
 
 import calendar
 import dataclasses
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Callable, cast
+from typing import cast
 
 import diskcache
 import fintech  # type: ignore[import-untyped]  # proprietary, no stubs
@@ -128,9 +129,7 @@ def _seconds_until_midnight() -> float:
     once per calendar day — the same strategy as the IBKR fetcher.
     """
     now = datetime.now()
-    midnight = (now + timedelta(days=1)).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
+    midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     return (midnight - now).total_seconds()
 
 
@@ -140,9 +139,7 @@ def _last_day_of_month(d: date) -> date:
 
 
 def _build_client(creds: ZKBCredentials) -> EbicsClient:
-    """Construct and return a ready-to-use EbicsClient from credentials.
-
-    """
+    """Construct and return a ready-to-use EbicsClient from credentials."""
     keyring = EbicsKeyRing(
         keys=str(creds.keys_file),
         passphrase=creds.passphrase,
@@ -187,13 +184,9 @@ def _fetch_statements(
                 date_to,
             )
             return {}
-        raise RuntimeError(
-            f"ZKB EBICS BTD failed for {date_from} -> {date_to}: {exc}"
-        ) from exc
+        raise RuntimeError(f"ZKB EBICS BTD failed for {date_from} -> {date_to}: {exc}") from exc
     except Exception as exc:
-        raise RuntimeError(
-            f"ZKB EBICS BTD failed for {date_from} -> {date_to}: {exc}"
-        ) from exc
+        raise RuntimeError(f"ZKB EBICS BTD failed for {date_from} -> {date_to}: {exc}") from exc
 
     if not statements:
         logger.warning(

@@ -141,3 +141,5 @@ pyrightconfig.json
 *.csv
 *.xml
 pipeline_sectrets.py
+*.bean
+.ruff_cache/

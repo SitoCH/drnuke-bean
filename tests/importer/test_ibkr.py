@@ -14,12 +14,10 @@ from pathlib import Path
 
 import pytest
 from beancount.core import data
-
-import drnukebean.importer.ibkr as ibkr_module
-from drnukebean.importer.ibkr import IBKRImporter, _is_forex, _wht_div_type, _forex_currencies
-
 from ibflex.enums import CashAction
 
+import drnukebean.importer.ibkr as ibkr_module
+from drnukebean.importer.ibkr import IBKRImporter, _forex_currencies, _is_forex, _wht_div_type
 from tests.conftest import (
     ACCOUNT,
     QUERY_NAME,
@@ -104,6 +102,7 @@ class TestAccountAndDate:
 
     def test_date_skips_base_summary_row(self, importer, mocker, tmp_path):
         from ibflex.Types import CashReportCurrency
+
         summary = CashReportCurrency(currency="BASE_SUMMARY", toDate=datetime.date(2024, 2, 1))
         real = make_cash_report_row(to_date=REPORT_DATE)
         response = make_response(cash_report=(summary, real))
@@ -134,7 +133,10 @@ class TestBalances:
 
     def test_base_summary_row_skipped(self, importer, mocker, tmp_path):
         from ibflex.Types import CashReportCurrency
-        summary = CashReportCurrency(currency="BASE_SUMMARY", endingCash=Decimal("99.00"), toDate=REPORT_DATE)
+
+        summary = CashReportCurrency(
+            currency="BASE_SUMMARY", endingCash=Decimal("99.00"), toDate=REPORT_DATE
+        )
         real = make_cash_report_row("CHF", "10000.00")
         response = make_response(cash_report=(summary, real))
         entries = _extract(importer, response, mocker, tmp_path)
@@ -144,10 +146,12 @@ class TestBalances:
         assert balances[0].amount.currency == "CHF"
 
     def test_multi_currency_balances(self, importer, mocker, tmp_path):
-        response = make_response(cash_report=(
-            make_cash_report_row("CHF", "10000.00"),
-            make_cash_report_row("USD", "5000.00"),
-        ))
+        response = make_response(
+            cash_report=(
+                make_cash_report_row("CHF", "10000.00"),
+                make_cash_report_row("USD", "5000.00"),
+            )
+        )
         entries = _extract(importer, response, mocker, tmp_path)
         balances = [e for e in entries if isinstance(e, data.Balance)]
         currencies = {b.amount.currency for b in balances}
@@ -198,8 +202,7 @@ class TestBuyTrade:
         assert len(txn.postings) == 4
 
     def test_buy_symbol_remap_applied(self, mocker, tmp_path):
-        imp = IBKRImporter(account=ACCOUNT, query_name=QUERY_NAME,
-                           symbol_map={"VT": "VT3"})
+        imp = IBKRImporter(account=ACCOUNT, query_name=QUERY_NAME, symbol_map={"VT": "VT3"})
         response = make_response(trades=(make_buy_trade(symbol="VT"),))
         entries = _extract(imp, response, mocker, tmp_path)
         txn = next(e for e in entries if isinstance(e, data.Transaction))
@@ -240,29 +243,31 @@ class TestSellTrade:
 
     def test_sell_lot_posting_has_cost_spec_with_open_date(self, importer, mocker, tmp_path):
         sell = make_sell_trade(symbol="VT", quantity="-5")
-        lot = make_closed_lot(symbol="VT", quantity="5",
-                               open_date_time=datetime.datetime(2023, 6, 1, 9, 0))
+        lot = make_closed_lot(
+            symbol="VT", quantity="5", open_date_time=datetime.datetime(2023, 6, 1, 9, 0)
+        )
         response = make_response(trades=(sell, lot))
         entries = _extract(importer, response, mocker, tmp_path)
         txn = next(e for e in entries if isinstance(e, data.Transaction))
         # Find the asset lot posting (negative quantity of the symbol)
         lot_postings = [
-            p for p in txn.postings
+            p
+            for p in txn.postings
             if p.account == f"{ACCOUNT}:VT" and p.units is not None and p.units.number < 0
         ]
         assert len(lot_postings) == 1
         assert lot_postings[0].cost.date == datetime.date(2023, 6, 1)
 
     def test_suppress_lot_price_zeroes_cost(self, mocker, tmp_path):
-        imp = IBKRImporter(account=ACCOUNT, query_name=QUERY_NAME,
-                           suppress_lot_price=True)
+        imp = IBKRImporter(account=ACCOUNT, query_name=QUERY_NAME, suppress_lot_price=True)
         sell = make_sell_trade(symbol="VT", quantity="-5")
         lot = make_closed_lot(symbol="VT", quantity="5", trade_price="100.00")
         response = make_response(trades=(sell, lot))
         entries = _extract(imp, response, mocker, tmp_path)
         txn = next(e for e in entries if isinstance(e, data.Transaction))
         lot_postings = [
-            p for p in txn.postings
+            p
+            for p in txn.postings
             if p.account == f"{ACCOUNT}:VT" and p.units is not None and p.units.number < 0
         ]
         assert lot_postings[0].cost.number_per == Decimal("0")
@@ -294,8 +299,7 @@ class TestForexTrade:
         response = make_response(trades=(make_forex_trade(symbol="USD.CHF"),))
         entries = _extract(importer, response, mocker, tmp_path)
         txn = next(e for e in entries if isinstance(e, data.Transaction))
-        liq_postings = [p for p in txn.postings
-                        if p.account.startswith(f"{ACCOUNT}:")]
+        liq_postings = [p for p in txn.postings if p.account.startswith(f"{ACCOUNT}:")]
         currencies = {p.account.split(":")[-1] for p in liq_postings}
         assert "USD" in currencies
         assert "CHF" in currencies
@@ -343,18 +347,14 @@ class TestDividends:
         assert "VT" in wht_postings[0].account
 
     def test_dividend_isin_in_metadata(self, importer, mocker, tmp_path):
-        div = make_dividend(
-            description="VT (US9229083632) CASH DIVIDEND USD 0.87 PER SHARE"
-        )
+        div = make_dividend(description="VT (US9229083632) CASH DIVIDEND USD 0.87 PER SHARE")
         response = make_response(cash_transactions=(div,))
         entries = _extract(importer, response, mocker, tmp_path)
         txn = next(e for e in entries if isinstance(e, data.Transaction))
         assert txn.meta.get("isin") == "US9229083632"
 
     def test_dividend_per_share_in_metadata(self, importer, mocker, tmp_path):
-        div = make_dividend(
-            description="VT (US9229083632) CASH DIVIDEND USD 0.8700 PER SHARE"
-        )
+        div = make_dividend(description="VT (US9229083632) CASH DIVIDEND USD 0.8700 PER SHARE")
         response = make_response(cash_transactions=(div,))
         entries = _extract(importer, response, mocker, tmp_path)
         txn = next(e for e in entries if isinstance(e, data.Transaction))
@@ -370,8 +370,9 @@ class TestDividends:
         assert "VT" in income_postings[0].account
 
     def test_dividend_explicit_div_account(self, mocker, tmp_path):
-        imp = IBKRImporter(account=ACCOUNT, query_name=QUERY_NAME,
-                           div_account="Income:Dividends:All")
+        imp = IBKRImporter(
+            account=ACCOUNT, query_name=QUERY_NAME, div_account="Income:Dividends:All"
+        )
         div = make_dividend(symbol="VT")
         response = make_response(cash_transactions=(div,))
         entries = _extract(imp, response, mocker, tmp_path)
@@ -560,9 +561,7 @@ class TestResolveAccount:
         with pytest.raises(ValueError, match="unknown keys"):
             IBKRImporter(account=ACCOUNT, account_map={"U12345": {"root": ACCOUNT, "typo": "X"}})
 
-    def test_map_routes_different_statements_to_different_roots(
-        self, mocker, tmp_path
-    ):
+    def test_map_routes_different_statements_to_different_roots(self, mocker, tmp_path):
         account_a = "Assets:Invest:IBKR:Trading"
         account_b = "Assets:Invest:IBKR:Pension"
         imp = IBKRImporter(
@@ -575,9 +574,13 @@ class TestResolveAccount:
         )
 
         from ibflex import Types
+
         from tests.conftest import (
-            STMT_FROM, STMT_TO, STMT_GENERATED,
-            make_buy_trade, make_cash_report_row,
+            STMT_FROM,
+            STMT_GENERATED,
+            STMT_TO,
+            make_buy_trade,
+            make_cash_report_row,
         )
 
         def make_stmt(account_id, symbol):
@@ -620,14 +623,17 @@ class TestResolveAccount:
 
 
 class TestHelpers:
-    @pytest.mark.parametrize("symbol,expected", [
-        ("USD.CHF", True),
-        ("EUR.USD", True),
-        ("VT", False),
-        ("VWRL", False),
-        ("USD.CH", False),   # second part too short
-        ("US.CHFF", False),  # first part too short
-    ])
+    @pytest.mark.parametrize(
+        "symbol,expected",
+        [
+            ("USD.CHF", True),
+            ("EUR.USD", True),
+            ("VT", False),
+            ("VWRL", False),
+            ("USD.CH", False),  # second part too short
+            ("US.CHFF", False),  # first part too short
+        ],
+    )
     def test_is_forex(self, symbol, expected):
         assert _is_forex(symbol) == expected
 
@@ -640,25 +646,31 @@ class TestHelpers:
         with pytest.raises(ValueError):
             _forex_currencies("NOTFOREX")
 
-    @pytest.mark.parametrize("description,expected", [
-        ("VT payment in lieu of dividend", CashAction.PAYMENTINLIEU),
-        ("VT PAYMENT IN LIEU OF DIVIDEND", CashAction.PAYMENTINLIEU),
-        ("VT Cash Dividend", CashAction.DIVIDEND),
-        ("VT DIVIDEND", CashAction.DIVIDEND),
-        ("US tax on credit int", "interest"),
-        ("unrecognised description", None),
-    ])
+    @pytest.mark.parametrize(
+        "description,expected",
+        [
+            ("VT payment in lieu of dividend", CashAction.PAYMENTINLIEU),
+            ("VT PAYMENT IN LIEU OF DIVIDEND", CashAction.PAYMENTINLIEU),
+            ("VT Cash Dividend", CashAction.DIVIDEND),
+            ("VT DIVIDEND", CashAction.DIVIDEND),
+            ("US tax on credit int", "interest"),
+            ("unrecognised description", None),
+        ],
+    )
     def test_wht_div_type(self, description, expected):
         assert _wht_div_type(description) == expected
 
-    @pytest.mark.parametrize("symbol,expected", [
-        ("VWRL.BATS", "VWRL"),       # exchange suffix stripped
-        ("VTz", "VT"),               # trailing z stripped
-        ("VWRL", "VWRL"),            # unchanged
-        # z-strip only removes trailing z; in "VTz.BATS" the z is not trailing,
-        # so suffix-strip produces "VTz" (not "VT")
-        ("VTz.BATS", "VTz"),
-    ])
+    @pytest.mark.parametrize(
+        "symbol,expected",
+        [
+            ("VWRL.BATS", "VWRL"),  # exchange suffix stripped
+            ("VTz", "VT"),  # trailing z stripped
+            ("VWRL", "VWRL"),  # unchanged
+            # z-strip only removes trailing z; in "VTz.BATS" the z is not trailing,
+            # so suffix-strip produces "VTz" (not "VT")
+            ("VTz.BATS", "VTz"),
+        ],
+    )
     def test_map_symbol(self, importer, symbol, expected):
         assert importer._map_symbol(symbol) == expected
 
@@ -681,8 +693,9 @@ class TestErrorResilience:
         assert entries == []
 
     def test_unrecognised_cash_action_skipped(self, importer, mocker, tmp_path):
-        from ibflex.Types import CashTransaction
         from ibflex.enums import CashAction
+        from ibflex.Types import CashTransaction
+
         # COMMADJ is not handled — should log a warning and produce no entry
         unknown = CashTransaction(
             type=CashAction.COMMADJ,

@@ -1,326 +1,420 @@
 """
-This is a beancount importer for Finpension. 
-Setup:
-1) have a running beancount system
-2) run 'bean-extract config.py path/to/finpension/transaction_report.csv -f mainLedgerFile.bean
+Beancount v3 importer for Finpension CSV exports (pillar 2 & 3a).
+
+Finpension always exports the full transaction history since account opening.
+Use the ``year`` parameter to restrict extraction to a single calendar year.
+
+Expected CSV columns (semicolon-delimited, UTF-8-BOM):
+    Date; Category; Asset Name; ISIN; Number of Shares; Asset Currency;
+    Currency Rate; Asset Price in CHF; Cash Flow; Balance
+
+Holdings are treated as currency-like positions: trades use a ``price``
+annotation rather than cost-basis lots. No PnL auto-complete posting is emitted.
+
+run_imports.py wiring example::
+
+    from drnukebean.importer.finpension import FinPensionImporter
+
+    _fp = FinPensionImporter(
+        root_account="Assets:Invest:FP:S3a:Portfolio1",
+        isin_lookup={"CH0012345678": "FUNDA", "CH0098765432": "FUNDB"},
+        year=2025,
+    )
+
+    pipelines = [
+        {
+            "name": "finpension",
+            "importer": _fp,
+            "source_dir": cfg.DOWNLOADS / "finpension",
+            "bean_output_file": cfg.LEDGER_DIR / "FinPension.bean",
+        },
+    ]
 """
 
-import pandas as pd
-from datetime import datetime, timedelta
-import xml.etree.ElementTree as ET
-import warnings
-import pickle
+import csv
 import re
-import numpy as np
-import sys
+from datetime import date, timedelta
+from pathlib import Path
+
+import beangulp
+from beancount.core import amount, data
+from beancount.core.number import D
 from loguru import logger
 
-import yaml
-from os import path
+# ---------------------------------------------------------------------------
+# CSV column names
+# ---------------------------------------------------------------------------
 
-from beancount.query import query
-from beancount.parser import options
-from beancount.ingest import importer
-from beancount.core import data, amount
-from beancount.core.number import D
-from beancount.core.number import Decimal
-from beancount.core import position
-from beancount.core.number import MISSING
+_COL_DATE = "Date"
+_COL_CATEGORY = "Category"
+_COL_ASSET_NAME = "Asset Name"
+_COL_ISIN = "ISIN"
+_COL_SHARES = "Number of Shares"
+_COL_CURRENCY = "Asset Currency"
+_COL_ASSET_PRICE = "Asset Price in CHF"
+_COL_CASHFLOW = "Cash Flow"
+_COL_BALANCE = "Balance"
 
-# some constants set by FinPension in the csv export header
-FP_currency = 'Asset Currency'
-FP_proceeds = 'Cash Flow'
-FP_asseet_price = 'Asset Price in CHF'
+# ---------------------------------------------------------------------------
+# Category sets (pillar 2 and 3a use different strings for the same concept)
+# ---------------------------------------------------------------------------
+
+_CATEGORIES_TRADE = frozenset({"Buy", "Sell", "Portfolio Transaction"})
+_CATEGORIES_DEPOSIT = frozenset({"Deposit", "Transfer vested benefits"})
+_CATEGORIES_FEE = frozenset(
+    {
+        "Flat-rate administrative fee",
+        "Flat-rate administration fee",
+        "Implementation fees",
+    }
+)
+_CATEGORIES_DIVIDEND = frozenset({"Dividend", "Dividend and Interest Distributions"})
 
 
-class FinPensionImporter(importer.ImporterProtocol):
+# ---------------------------------------------------------------------------
+# Importer
+# ---------------------------------------------------------------------------
+
+
+class FinPensionImporter(beangulp.Importer):
+    """Beancount v3 importer for Finpension CSV exports.
+
+    Args:
+        root_account:           Root account, e.g. ``Assets:Invest:FP:S3a:Portfolio1``.
+                                Must contain the pillar placeholder (``S2``, ``S3``, or
+                                ``S3a``) and portfolio placeholder (``Portfolio<N>``) that
+                                the regex will substitute from the filename.
+        isin_lookup:            Mapping of ISIN -> ticker symbol, e.g.
+                                ``{"CH0012345678": "FUNDA"}``.
+        deposit_account:        Unused when ``ignore_funds_transfers=True``. Kept for
+                                compatibility; the deposit transaction uses a single
+                                cash posting that smart_importer can complete.
+        div_suffix:             Sub-account suffix for dividend income.
+        interest_suffix:        Sub-account suffix for interest income.
+        fees_suffix:            Sub-account suffix for fee expenses.
+        file_encoding:          CSV encoding. Finpension exports use UTF-8-BOM.
+        regex:                  Pattern to extract (pillar, portfolio) from the filename.
+        year:                   If set, only rows from this calendar year are extracted.
+                                ``None`` imports the full history.
+        ignore_funds_transfers: If ``True``, Deposit and Transfer rows are silently
+                                dropped. If ``False`` (default), a single-posting
+                                transaction is emitted for smart_importer to complete.
     """
-    Beancount Importer for Finpension
-    """
 
-    def __init__(self,
-                 deposit_account = None,
-                 root_account = None,
-                 isin_lookup = None, # for example Assets:Invest:IB
-                 div_suffix='Div',  # suffix for dividend Account , like Assets:Invest:IB:VT:Div
-                 interest_suffix='Interest',
-                 fees_suffix='Fees',
-                 pnl_suffix='PnL',
-                 file_encoding="utf-8-sig",
-                 sep=";",
-                 # a regex pattern that allows to distinguish between pillar 2&3 and individual portfolios
-                 regex=r"finpension_(S[2,3][a]?)_(Portfolio\d)",
-                 ):
-
-        self.root_account = root_account  # root account from  which others can be derived
+    def __init__(
+        self,
+        root_account: str,
+        isin_lookup: dict[str, str],
+        deposit_account: str = "",
+        div_suffix: str = "Div",
+        interest_suffix: str = "Interest",
+        fees_suffix: str = "Fees",
+        file_encoding: str = "utf-8-sig",
+        regex: str = r"finpension_(S[23][a]?)_(Portfolio\d)",
+        year: int | None = None,
+        ignore_funds_transfers: bool = False,
+    ) -> None:
+        self.root_account = root_account
+        self.isin_lookup = isin_lookup
         self.deposit_account = deposit_account
         self.div_suffix = div_suffix
         self.interest_suffix = interest_suffix
         self.fees_suffix = fees_suffix
-        self.pnl_suffix = pnl_suffix
-        self.isin_lookup = isin_lookup
         self.file_encoding = file_encoding
-        self.flag = '*'
+        self.flag = "*"
         self.regex = regex
-        self.sep = sep
+        self.year = year
+        self.ignore_funds_transfers = ignore_funds_transfers
+        self.main_account: str = root_account  # overwritten by fix_accounts
 
-    def identify(self, file):
-        # intended file format is *finpension_s2_p1* for säule(pillar) 2 portfolio 1
-        result = bool(re.search(self.regex, file.name, re.IGNORECASE))
+    # ------------------------------------------------------------------
+    # beangulp interface
+    # ------------------------------------------------------------------
+
+    def identify(self, filepath: str) -> bool:
+        result = bool(re.search(self.regex, filepath, re.IGNORECASE))
         logger.info(
-            f"identify assertion for finpension importer and file '{file.name}': {result}")
+            f"identify assertion for finpension importer and file '{filepath}': {result}"
+        )
         return result
 
-    def getLiquidityAccount(self, currency):
-        return ':'.join([self.main_account, currency])
+    def account(self, filepath: str) -> str:
+        self.fix_accounts(filepath)
+        return self.main_account
 
-    def getDivIncomeAcconut(self, currency, symbol):
-        return ':'.join([self.main_account.replace('Assets', 'Income'), symbol, self.div_suffix])
+    @property
+    def name(self) -> str:
+        return f"finpension.{self.root_account}"
 
-    def getInterestIncomeAcconut(self, currency):
-        return ':'.join([self.main_account.replace('Assets', 'Income'), self.interest_suffix, currency])
+    def filename(self, filepath: str) -> str:
+        return Path(filepath).name
 
-    def getAssetAccount(self, symbol):
-        return ':'.join([self.main_account, symbol])
+    def date(self, filepath: str) -> date | None:
+        rows = self._read_rows(filepath)
+        filtered = self._filter_year(rows)
+        if not filtered:
+            return None
+        return max(self._parse_date(r[_COL_DATE]) for r in filtered)
 
-    def getFeesAccount(self, currency):
-        return ':'.join([self.main_account.replace('Assets', 'Expenses'), self.fees_suffix, currency])
+    def extract(self, filepath: str, existing: data.Entries) -> data.Entries:
+        self.fix_accounts(filepath)
+        rows = self._read_rows(filepath)
+        filtered = self._filter_year(rows)
 
-    def file_account(self, file):
-        self.fix_accounts(file)
-        return self.main_account or self.root_account
+        entries: list = []
+        for row in filtered:
+            category = row[_COL_CATEGORY].strip()
+            if category in _CATEGORIES_TRADE or category == "Liquidation distribution":
+                entry = self._handle_trade(row)
+            elif category in _CATEGORIES_DEPOSIT:
+                entry = self._handle_deposit(row)
+            elif category in _CATEGORIES_FEE:
+                entry = self._handle_fee(row)
+            elif category == "Interests":
+                entry = self._handle_interest(row)
+            elif category in _CATEGORIES_DIVIDEND:
+                entry = self._handle_dividend(row)
+            else:
+                logger.warning(
+                    f"finpension: unknown category '{category}', skipping row on {row[_COL_DATE]}"
+                )
+                entry = None
 
-    def fix_accounts(self, file):
+            if entry is not None:
+                entries.append(entry)
+
+        entries.extend(self._make_balances(filtered))
+        return entries
+
+    # ------------------------------------------------------------------
+    # Account helpers (kept from v2, read self.main_account)
+    # ------------------------------------------------------------------
+
+    def getLiquidityAccount(self, currency: str) -> str:
+        return ":".join([self.main_account, currency])
+
+    def getDivIncomeAcconut(self, currency: str, symbol: str) -> str:
+        return ":".join(
+            [self.main_account.replace("Assets", "Income"), symbol, self.div_suffix]
+        )
+
+    def getInterestIncomeAcconut(self, currency: str) -> str:
+        return ":".join(
+            [self.main_account.replace("Assets", "Income"), self.interest_suffix, currency]
+        )
+
+    def getAssetAccount(self, symbol: str) -> str:
+        return ":".join([self.main_account, symbol])
+
+    def getFeesAccount(self, currency: str) -> str:
+        return ":".join(
+            [self.main_account.replace("Assets", "Expenses"), self.fees_suffix, currency]
+        )
+
+    # ------------------------------------------------------------------
+    # fix_accounts (adapted from v2: filepath str instead of file object)
+    # ------------------------------------------------------------------
+
+    def fix_accounts(self, filepath: str) -> None:
         try:
-            pillar, portfolio = re.search(
-                self.regex, file.name, re.IGNORECASE).groups()
+            pillar, portfolio = re.search(self.regex, filepath, re.IGNORECASE).groups()
         except AttributeError as e:
             logger.error(
-                f"could not extract pillar and/or portfolio from filename {file.name} with regex pattern {self.regex}.")
-            raise AttributeError(e)
-        new_account = re.sub(r"S[2,3]a?", pillar, self.root_account)
-        self.main_account = re.sub(r"Portfolio\d", portfolio, new_account)    
-            
+                f"could not extract pillar and/or portfolio from filename {filepath} "
+                f"with regex pattern {self.regex}."
+            )
+            raise AttributeError(e) from e
+        new_account = re.sub(r"S[23]a?", pillar, self.root_account)
+        self.main_account = re.sub(r"Portfolio\d", portfolio, new_account)
 
+    # ------------------------------------------------------------------
+    # Transaction handlers
+    # ------------------------------------------------------------------
 
-    def extract(self, file_, existing_entries=None):
-        # the actual processing of the csv export
+    def _handle_trade(self, row: dict) -> data.Transaction | None:
+        """Handle Buy, Sell, and Liquidation distribution rows.
 
-        # fix Account names with regard to pillar 2/3 and different portfolios.
-        self.fix_accounts(file_)
+        For Liquidation distribution the shares field is empty; in that case
+        only the cash leg is emitted and the transaction is flagged '!' for
+        manual inspection.
+        """
+        currency = row[_COL_CURRENCY].strip()
+        isin = row[_COL_ISIN].strip()
+        symbol = self.isin_lookup.get(isin)
+        if symbol is None:
+            logger.error(
+                f"Could not fetch isin {isin} from supplied ISINs "
+                f"{list(self.isin_lookup.keys())}"
+            )
+            return None
 
-        df = pd.read_csv(file_.name,
-                         sep=self.sep,
-                         )
-        # convert specific columns to Decimal with specific precisions
-        to_decimal_dict = {"Number of Shares": 3,
-                           "Asset Price in CHF": 2,
-                           "Cash Flow": 2,
-                           "Balance": 2}
-        for col, digits in to_decimal_dict.items():
-            df[col] = df[col].apply(lambda x: Decimal(x).__round__(digits))
+        shares_str = row[_COL_SHARES].strip()
+        proceeds = amount.Amount(D(row[_COL_CASHFLOW]), currency)
+        asset_name = row[_COL_ASSET_NAME].strip()
 
-        df['Date'] = pd.to_datetime(df['Date']).apply(datetime.date)
-
-        # disect the complete report in similar transactions
-        # abit messy since Finpension uses different tags in pillar 2/3a
-        trades = df[df.Category.isin(["Portfolio Transaction",'Buy','Sell'])]
-        deposits = df[df.Category.isin(["Transfer vested benefits",'Deposit'])]
-        fees = df[df.Category.isin(["Implementation fees",'Flat-rate administrative fee','Flat-rate administration fee'])]
-        interests = df[df.Category == "Interests"]
-        dividends = df[df.Category.isin(["Dividend and Interest Distributions",'Dividend'])]
-
-        return_txn = (self.Trades(trades)
-                      + self.Deposits(deposits) # omitted for only occuring very rarely
-                      + self.Fees(fees)
-                      + self.Interest(interests)
-                      + self.Dividends(dividends)
-                      + self.Balances(df)
-                      )
-
-        return return_txn
-
-    def Trades(self, trades):
-        bean_transactions = []
-        for idx, row in trades.iterrows():
-            # temporary fix for nan values
-            if row["Number of Shares"].is_nan():
-                logger.warning(f"detected nan values:{row}")
-                row=row.fillna(Decimal("0"))
-            currency = row[FP_currency]
-            isin = row['ISIN']
-            symbol = self.isin_lookup.get(isin)
-            asset = row['Asset Name']
-            if symbol is None:
-                logger.error(
-                    f"Could not fetch isin {row['symbol']} from supplied ISINs {list(self.isin_lookup.keys())}")
-                continue
-            proceeds = amount.Amount(row[FP_proceeds], currency)
-
-            quantity = amount.Amount(row['Number of Shares'], symbol)
-            price = amount.Amount(row[FP_asseet_price], "CHF")
-
+        if shares_str:
+            quantity = amount.Amount(D(shares_str), symbol)
+            price = amount.Amount(D(row[_COL_ASSET_PRICE].strip()), "CHF")
+            buy_sell = "BUY" if quantity.number > 0 else "SELL"
+            narration = " ".join(
+                [buy_sell, quantity.to_string(), "@", price.to_string() + ";", asset_name]
+            )
             postings = [
-                data.Posting(self.getAssetAccount(symbol),
-                             quantity, None, price, None, None),
-                data.Posting(self.getLiquidityAccount(currency),
-                             proceeds, None, None, None, None),
+                data.Posting(self.getAssetAccount(symbol), quantity, None, price, None, None),
+                data.Posting(
+                    self.getLiquidityAccount(currency), proceeds, None, None, None, None
+                ),
             ]
-            if quantity.number > 0:
-                buy_sell = "BUY"
-            else:
-                buy_sell = "SELL"
-            bean_transactions.append(
-                data.Transaction(data.new_metadata('Buy', 0),
-                                 row['Date'],
-                                 self.flag,
-                                 isin,     # payee
-                                 ' '.join(
-                                     [buy_sell, quantity.to_string(), '@', price.to_string()+";", asset]),
-                                 data.EMPTY_SET,
-                                 data.EMPTY_SET,
-                                 postings
-                                 ))
-        return bean_transactions
+            flag = self.flag
+        else:
+            # Liquidation distribution: shares not reported in CSV
+            narration = f"Liquidation distribution {symbol}; {asset_name}"
+            postings = [
+                data.Posting(
+                    self.getLiquidityAccount(currency), proceeds, None, None, None, None
+                ),
+            ]
+            flag = "!"
 
-    def Fees(self, fees):
+        return data.Transaction(
+            data.new_metadata("Buy", 0),
+            self._parse_date(row[_COL_DATE]),
+            flag,
+            isin,
+            narration,
+            data.EMPTY_SET,
+            data.EMPTY_SET,
+            postings,
+        )
 
-        bean_transactions = []
-        for idx, row in fees.iterrows():
-            currency = row[FP_currency]
-            amount_ = amount.Amount(row[FP_proceeds], currency)
+    def _handle_deposit(self, row: dict) -> data.Transaction | None:
+        if self.ignore_funds_transfers:
+            return None
+        currency = row[_COL_CURRENCY].strip()
+        amount_ = amount.Amount(D(row[_COL_CASHFLOW]), currency)
+        postings = [
+            data.Posting(self.getLiquidityAccount(currency), amount_, None, None, None, None),
+        ]
+        meta = data.new_metadata("deposit/withdrawel", 0)
+        return data.Transaction(
+            meta,
+            self._parse_date(row[_COL_DATE]),
+            self.flag,
+            "self",
+            "deposit / withdrawal",
+            data.EMPTY_SET,
+            data.EMPTY_SET,
+            postings,
+        )
 
-            # make the postings, two for fees
-            postings = [data.Posting(self.getFeesAccount(currency),
-                                     -amount_, None, None, None, None),
-                        data.Posting(self.getLiquidityAccount(currency),
-                                     amount_, None, None, None, None)]
-            meta = data.new_metadata(__file__, 0, {})  # actually no metadata
-            bean_transactions.append(
-                data.Transaction(meta,
-                                 row['Date'],
-                                 self.flag,
-                                 'FinPension',     # payee
-                                 "Fees",
-                                 data.EMPTY_SET,
-                                 data.EMPTY_SET,
-                                 postings))
-        return bean_transactions
+    def _handle_fee(self, row: dict) -> data.Transaction:
+        currency = row[_COL_CURRENCY].strip()
+        amount_ = amount.Amount(D(row[_COL_CASHFLOW]), currency)
+        postings = [
+            data.Posting(self.getFeesAccount(currency), -amount_, None, None, None, None),
+            data.Posting(self.getLiquidityAccount(currency), amount_, None, None, None, None),
+        ]
+        meta = data.new_metadata(__file__, 0, {})
+        return data.Transaction(
+            meta,
+            self._parse_date(row[_COL_DATE]),
+            self.flag,
+            "FinPension",
+            row[_COL_CATEGORY].strip(),
+            data.EMPTY_SET,
+            data.EMPTY_SET,
+            postings,
+        )
 
-    def Dividends(self, dividends):
-        # this function crates Dividend transactions from IBKR data
-        # make dividend & WHT transactions
+    def _handle_interest(self, row: dict) -> data.Transaction:
+        currency = row[_COL_CURRENCY].strip()
+        amount_ = amount.Amount(D(row[_COL_CASHFLOW]), currency)
+        postings = [
+            data.Posting(
+                self.getInterestIncomeAcconut(currency), -amount_, None, None, None, None
+            ),
+            data.Posting(self.getLiquidityAccount(currency), amount_, None, None, None, None),
+        ]
+        meta = data.new_metadata("Interest", 0)
+        return data.Transaction(
+            meta,
+            self._parse_date(row[_COL_DATE]),
+            self.flag,
+            "FinPension",
+            "Interest",
+            data.EMPTY_SET,
+            data.EMPTY_SET,
+            postings,
+        )
 
-        bean_transactions = []
-        for idx, row in dividends.iterrows():
-            currency = row[FP_currency]
-            isin = row['ISIN']
-            symbol = self.isin_lookup.get(isin)
-            if symbol is None:
-                logger.error(
-                    f"Could not fetch isin {row['symbol']} from supplied ISINs {list(self.isin_lookup.keys())}")
+    def _handle_dividend(self, row: dict) -> data.Transaction | None:
+        currency = row[_COL_CURRENCY].strip()
+        isin = row[_COL_ISIN].strip()
+        symbol = self.isin_lookup.get(isin)
+        if symbol is None:
+            logger.error(
+                f"Could not fetch isin {isin} from supplied ISINs "
+                f"{list(self.isin_lookup.keys())}"
+            )
+            return None
+        amount_div = amount.Amount(D(row[_COL_CASHFLOW]), currency)
+        postings = [
+            data.Posting(
+                self.getDivIncomeAcconut(currency, symbol), -amount_div, None, None, None, None
+            ),
+            data.Posting(self.getLiquidityAccount(currency), amount_div, None, None, None, None),
+        ]
+        meta = data.new_metadata("dividend", 0, {"isin": isin})
+        return data.Transaction(
+            meta,
+            self._parse_date(row[_COL_DATE]),
+            self.flag,
+            isin,
+            f"Dividend {symbol}; {row[_COL_ASSET_NAME].strip()}",
+            data.EMPTY_SET,
+            data.EMPTY_SET,
+            postings,
+        )
+
+    def _make_balances(self, rows: list[dict]) -> list[data.Balance]:
+        if not rows:
+            return []
+        max_date = max(self._parse_date(r[_COL_DATE]) for r in rows)
+        last_rows = [r for r in rows if self._parse_date(r[_COL_DATE]) == max_date]
+        balances = []
+        for row in last_rows:
+            balance_str = row[_COL_BALANCE].strip()
+            if not balance_str:
                 continue
-            amount_div = amount.Amount(row[FP_proceeds], currency)
-            
-            
+            currency = row[_COL_CURRENCY].strip()
+            amt = amount.Amount(D(balance_str), currency)
+            meta = data.new_metadata("balance", 0)
+            balances.append(
+                data.Balance(
+                    meta,
+                    max_date + timedelta(days=1),
+                    self.getLiquidityAccount(currency),
+                    amt,
+                    None,
+                    None,
+                )
+            )
+        return balances
 
-            postings = [data.Posting(self.getDivIncomeAcconut(currency, symbol),
-                                     -amount_div, None, None, None, None),
-                        data.Posting(self.getLiquidityAccount(currency),
-                                     amount_div, None, None, None, None)
-                        ]
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
 
-            metadict = {'isin': isin}
-            per_share_number = row[FP_asseet_price]
-            if not per_share_number.is_nan():
-                pershare = amount.Amount(row[FP_asseet_price], currency)
-                metadict.update({'per_share': pershare})
+    def _read_rows(self, filepath: str) -> list[dict]:
+        with open(filepath, encoding=self.file_encoding) as f:
+            reader = csv.DictReader(f, delimiter=";")
+            return list(reader)
 
-            meta = data.new_metadata(
-                'dividend', 0, metadict)
-            bean_transactions.append(
-                data.Transaction(meta,  # could add div per share, ISIN,....
-                                 row['Date'],
-                                 self.flag,
-                                 isin,     # payee
-                                 f"Dividend {symbol}; {row['Asset Name']}",
-                                 data.EMPTY_SET,
-                                 data.EMPTY_SET,
-                                 postings
-                                 ))
+    def _filter_year(self, rows: list[dict]) -> list[dict]:
+        if self.year is None:
+            return rows
+        return [r for r in rows if self._parse_date(r[_COL_DATE]).year == self.year]
 
-        return bean_transactions
-
-    def Interest(self, int_):
-        # calculates interest payments from IBKR data
-        bean_transactions = []
-        for idx, row in int_.iterrows():
-            currency = row[FP_currency]
-            amount_ = amount.Amount(row[FP_proceeds], currency)
-
-            # make the postings, two for interest payments
-            # received and paid interests are booked on the same account
-            postings = [data.Posting(self.getInterestIncomeAcconut(currency),
-                                     -amount_, None, None, None, None),
-                        data.Posting(self.getLiquidityAccount(currency),
-                                     amount_, None, None, None, None)
-                        ]
-            meta = data.new_metadata('Interest', 0)
-            bean_transactions.append(
-                data.Transaction(meta,  # could add div per share, ISIN,....
-                                 row['Date'],
-                                 self.flag,
-                                 'FinPension',     # payee
-                                 "Interest",
-                                 data.EMPTY_SET,
-                                 data.EMPTY_SET,
-                                 postings
-                                 ))
-        return bean_transactions
-
-    def Balances(self, df):
-        # generate Balance statements for every latest transaction
-        # (there may be multiple, no idea how to pick the right one)
-        # simply make a balance for all values, the correct one should be one of them
-
-        bean_transactions = []
-        df = df[df['Date'] == df['Date'].max()]
-        for idx, row in df.iterrows():
-            currency = row[FP_currency]
-            amount_ = amount.Amount(row['Balance'], currency)
-            meta = data.new_metadata('balance', 0)
-            bean_transactions.append(data.Balance(
-                meta,
-                row['Date'] + timedelta(days=1),  # see tariochtools EC imp.
-                self.getLiquidityAccount(currency),
-                amount_,
-                None,
-                None))
-        return bean_transactions
-
-    def Deposits(self, dep):
-            bean_transactions = []
-            if len(self.deposit_account) == 0:  # control this from the config file
-                return []
-            for idx, row in dep.iterrows():
-                currency = row[FP_currency]
-                amount_ = amount.Amount(row[FP_proceeds], currency)
-
-                # make the postings. two for deposits
-                postings = [data.Posting(self.deposit_account,
-                                        -amount_, None, None, None, None),
-                            data.Posting(self.getLiquidityAccount(currency),
-                                        amount_, None, None, None, None)
-                            ]
-                meta = data.new_metadata('deposit/withdrawel', 0)
-                bean_transactions.append(
-                    data.Transaction(meta,  # could add div per share, ISIN,....
-                                    row['Date'],
-                                    self.flag,
-                                    'self',     # payee
-                                    "deposit / withdrawal",
-                                    data.EMPTY_SET,
-                                    data.EMPTY_SET,
-                                    postings
-                                    ))
-            return bean_transactions
+    @staticmethod
+    def _parse_date(date_str: str) -> date:
+        return date.fromisoformat(date_str.strip())

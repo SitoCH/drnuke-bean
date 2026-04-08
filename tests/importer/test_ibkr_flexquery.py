@@ -131,6 +131,7 @@ class TestCacheMiss:
 
     def test_response_stored_in_cache(self, tmp_path, mocker):
         import diskcache
+
         setup = _setup(tmp_path, mocker)
         setup(DATE_FROM, DATE_TO)
         cache_key = (_QUERY_NAME, DATE_FROM.isoformat(), DATE_TO.isoformat())
@@ -148,6 +149,7 @@ class TestCacheHit:
     def _prime_cache(self, tmp_path):
         """Populate cache directly without network."""
         import diskcache
+
         cache_key = (_QUERY_NAME, DATE_FROM.isoformat(), DATE_TO.isoformat())
         with diskcache.Cache(tmp_path / ".cache") as cache:
             cache.set(cache_key, _SAMPLE_XML, expire=3600)
@@ -193,6 +195,7 @@ class TestQueryNameMismatch:
 
     def test_cache_not_populated_on_mismatch(self, tmp_path, mocker):
         import diskcache
+
         wrong_xml = b'<FlexQueryResponse queryName="WrongQuery" type="AF"><FlexStatements count="0"/></FlexQueryResponse>'
         mocker.patch.object(fq_module.client, "download", return_value=wrong_xml)
         setup = make_ibkr_setup(_TOKEN, _QUERY_ID, _QUERY_NAME, tmp_path)
@@ -223,8 +226,10 @@ class TestQueryNameMismatch:
 class TestDownloadError:
     def test_response_code_error_raises_runtime_error(self, tmp_path, mocker):
         from ibflex.client import ResponseCodeError
-        mocker.patch.object(fq_module.client, "download",
-                            side_effect=ResponseCodeError("1012", "Account not found"))
+
+        mocker.patch.object(
+            fq_module.client, "download", side_effect=ResponseCodeError("1012", "Account not found")
+        )
         setup = make_ibkr_setup(_TOKEN, _QUERY_ID, _QUERY_NAME, tmp_path)
         with pytest.raises(RuntimeError, match="IBKR FlexQuery download failed"):
             setup(DATE_FROM, DATE_TO)

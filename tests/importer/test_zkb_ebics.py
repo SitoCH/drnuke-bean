@@ -12,14 +12,14 @@ from unittest.mock import MagicMock, call
 
 import pytest
 
-import drnukebean.importer.zkb_ebics as ebics_module
+import drnukebean.importer.zkb_ebics as ebics_module  # calls fintech.register()
+from fintech.ebics import EbicsFunctionalError  # type: ignore[import-untyped]
 from drnukebean.importer.zkb_ebics import (
     ZKBCredentials,
     _fetch_statements,
     _write_statements,
     make_zkb_setup,
 )
-from fintech.ebics import EbicsFunctionalError  # type: ignore[import-untyped]
 
 # Runner passes first-of-month dates as period identifiers.
 DATE_FROM = datetime.date(2024, 1, 1)
@@ -102,12 +102,14 @@ class TestCacheMiss:
     def test_confirm_called_after_btd(self, tmp_path, mocker):
         """confirm_download must come after BTD (protocol ordering)."""
         mock_cl = _run_setup(tmp_path, mocker)
-        assert mock_cl.mock_calls.index(call.BTD(ebics_module._BTF, start=DATE_FROM, end=DATE_TO_EBICS)) \
-               < mock_cl.mock_calls.index(call.confirm_download())
+        assert mock_cl.mock_calls.index(
+            call.BTD(ebics_module._BTF, start=DATE_FROM, end=DATE_TO_EBICS)
+        ) < mock_cl.mock_calls.index(call.confirm_download())
 
     def test_cache_populated_after_fetch(self, tmp_path, mocker):
         _run_setup(tmp_path, mocker)
         import diskcache
+
         with diskcache.Cache(tmp_path / ".cache") as cache:
             key = (DATE_FROM.isoformat(), DATE_TO.isoformat())
             assert key in cache
@@ -155,6 +157,7 @@ class TestEmptyResponse:
     def test_empty_btd_not_cached(self, tmp_path, mocker):
         _run_setup(tmp_path, mocker, btd_response={})
         import diskcache
+
         with diskcache.Cache(tmp_path / ".cache") as cache:
             key = (DATE_FROM.isoformat(), DATE_TO.isoformat())
             assert key not in cache
@@ -197,6 +200,7 @@ class TestNoDownloadData:
     def test_not_cached(self, tmp_path, mocker):
         self._raise_no_data(mocker, tmp_path)
         import diskcache
+
         with diskcache.Cache(tmp_path / ".cache") as cache:
             assert (DATE_FROM.isoformat(), DATE_TO.isoformat()) not in cache
 
@@ -220,6 +224,7 @@ class TestIdempotentWrite:
         _mock_client(mocker, btd_response={"stmt.xml": b"<changed/>"})
         # Manually populate cache with new content to trigger write path
         import diskcache
+
         with diskcache.Cache(tmp_path / ".cache") as cache:
             cache.delete((DATE_FROM.isoformat(), DATE_TO.isoformat()))
         _run_setup(tmp_path, mocker, btd_response={"stmt.xml": b"<changed/>"})
@@ -275,9 +280,7 @@ class TestFetchStatements:
     def test_other_functional_error_raises_runtime_error(self, mocker):
         """Any EbicsFunctionalError other than NO_DOWNLOAD_DATA must still raise."""
         mock_cl = MagicMock()
-        mock_cl.BTD.side_effect = EbicsFunctionalError(
-            EbicsFunctionalError.EBICS_PROCESSING_ERROR
-        )
+        mock_cl.BTD.side_effect = EbicsFunctionalError(EbicsFunctionalError.EBICS_PROCESSING_ERROR)
         mocker.patch.object(ebics_module, "_build_client", return_value=mock_cl)
         with pytest.raises(RuntimeError, match="ZKB EBICS BTD failed"):
             _fetch_statements(_CREDS, DATE_FROM, DATE_TO)

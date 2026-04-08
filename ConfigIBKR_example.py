@@ -4,7 +4,7 @@ from drnukebean.importer import ibkr
 # example importer config for IBKR importer by DrNuke
 # use with "bean-extract ConfigIBKR_example.py /path/to/ibkr.yaml -f main.Ledgerfile
 
-# your ibkr.yaml file schould look like 
+# your ibkr.yaml file schould look like
 # token: 123456789101112131415
 # queryId: 123456
 # baseCcy: XXX # 'USD', or 'CHF'
@@ -17,12 +17,12 @@ from drnukebean.importer import ibkr
 # Section "Trades"
 # tr_columns=['buySell', 'currency', 'symbol', 'description', 'tradeDate', 'quantity',
 #        'tradePrice', 'ibCommission', 'ibCommissionCurrency', 'notes', 'cost',
-#        'openDateTime', 'levelOfDetail', 'ibOrderID', 'proceeds', 
+#        'openDateTime', 'levelOfDetail', 'ibOrderID', 'proceeds',
 #        'dateTime']
 
 
-# I do not know a nice way to specify the account structure. This importer is 
-# based on my own. You can adjust the getXXXAccount() functions of the importer 
+# I do not know a nice way to specify the account structure. This importer is
+# based on my own. You can adjust the getXXXAccount() functions of the importer
 # class to suit your needs
 
 
@@ -41,7 +41,6 @@ IBKR = ibkr.IBKRImporter(
                                 # considerable loading times. Set to None for real
                                 # API Flex Query fetching. used mainly for development.
 )
-    
+
 CONFIG = [IBKR]
 extract.HEADER = '' # remove unnesseccary terminal output
-

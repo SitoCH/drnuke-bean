@@ -63,7 +63,7 @@ Usage in run_imports.py::
                 },
             ),
             source_dir=_ibkr_dir,
-            output_file='~/ledger/import/IBKR.bean',
+            bean_output_file='~/ledger/import/IBKR.bean',
             setup=make_ibkr_setup(
                 token=cfg.IBKR_TOKEN,
                 query_id=cfg.IBKR_QUERY_ID,
@@ -100,10 +100,8 @@ from pathlib import Path
 import beangulp
 from beancount.core import amount, data, position
 from beancount.core.number import D
-
-from ibflex import parser, Types
+from ibflex import Types, parser
 from ibflex.enums import BuySell, CashAction
-
 from loguru import logger
 
 from drnukebean.importer.util import amount_add, minus
@@ -120,9 +118,7 @@ _RE_WHT_PIL = re.compile(r".*payment in lieu of dividend", re.IGNORECASE)
 _RE_WHT_DIV = re.compile(r".*dividend", re.IGNORECASE)
 _RE_WHT_INTEREST = re.compile(r".*on credit int", re.IGNORECASE)
 _RE_ISIN = re.compile(r"\(([A-Z]{2}[A-Z0-9]{9}\d)\)")
-_RE_PER_SHARE = re.compile(
-    r"(?P<amount>\d*[.]\d*)\s*(?:[A-Z]+\s*)?PER SHARE", re.IGNORECASE
-)
+_RE_PER_SHARE = re.compile(r"(?P<amount>\d*[.]\d*)\s*(?:[A-Z]+\s*)?PER SHARE", re.IGNORECASE)
 _RE_FEE_MONTH = re.compile(r"\b\w{3}\s+\d{4}\b")
 
 # ---------------------------------------------------------------------------
@@ -245,9 +241,7 @@ class IBKRImporter(beangulp.Importer):
         if account_map is not None:
             for acct_id, cfg in account_map.items():
                 if "root" not in cfg:
-                    raise ValueError(
-                        f"account_map[{acct_id!r}] missing required key 'root'"
-                    )
+                    raise ValueError(f"account_map[{acct_id!r}] missing required key 'root'")
                 unknown = set(cfg) - {"root", "deposit_from"}
                 if unknown:
                     raise ValueError(
@@ -359,9 +353,7 @@ class IBKRImporter(beangulp.Importer):
         """Dispatch trade rows to forex or stock handlers."""
         all_trades = list(trades)
         forex_trades = [(i, t) for i, t in enumerate(all_trades) if _is_forex(t.symbol)]
-        stock_trades = [
-            (i, t) for i, t in enumerate(all_trades) if not _is_forex(t.symbol)
-        ]
+        stock_trades = [(i, t) for i, t in enumerate(all_trades) if not _is_forex(t.symbol)]
 
         entries: list = []
         for _, trx in forex_trades:
@@ -418,12 +410,8 @@ class IBKRImporter(beangulp.Importer):
 
     def _stock_trades(self, indexed_trades: list, filepath: str, account_root: str) -> list:
         """Process stock execution trades; match closed lots to each sell."""
-        executions = [
-            (i, t) for i, t in indexed_trades if t.levelOfDetail == "EXECUTION"
-        ]
-        closed_lots = [
-            (i, t) for i, t in indexed_trades if t.levelOfDetail == "CLOSED_LOT"
-        ]
+        executions = [(i, t) for i, t in indexed_trades if t.levelOfDetail == "EXECUTION"]
+        closed_lots = [(i, t) for i, t in indexed_trades if t.levelOfDetail == "CLOSED_LOT"]
 
         entries: list = []
         for exec_idx, trx in executions:
@@ -460,7 +448,9 @@ class IBKRImporter(beangulp.Importer):
             merge=False,
         )
         postings = [
-            data.Posting(self._asset_account(symbol, account_root), quantity, cost, None, None, None),
+            data.Posting(
+                self._asset_account(symbol, account_root), quantity, cost, None, None, None
+            ),
             data.Posting(
                 self._liquidity_account(currency, account_root), proceeds, None, None, None, None
             ),
@@ -509,9 +499,7 @@ class IBKRImporter(beangulp.Importer):
                     "IBKRImporter: lot quantity over-match for sell {} on {}", symbol, trx.dateTime
                 )
                 break
-            cost_price = (
-                D("0") if self._suppress_lot_price else D(str(round(lot.tradePrice, 2)))
-            )
+            cost_price = D("0") if self._suppress_lot_price else D(str(round(lot.tradePrice, 2)))
             cost = position.CostSpec(
                 number_per=cost_price,
                 number_total=None,
@@ -536,13 +524,21 @@ class IBKRImporter(beangulp.Importer):
         if sum_qty != -trx.quantity:
             logger.warning(
                 "IBKRImporter: lot quantity mismatch for sell {} on {}: lots total {}, expected {}",
-                symbol, trx.dateTime, sum_qty, -trx.quantity,
+                symbol,
+                trx.dateTime,
+                sum_qty,
+                -trx.quantity,
             )
 
         postings = (
             [
                 data.Posting(
-                    self._liquidity_account(currency, account_root), proceeds, None, None, None, None
+                    self._liquidity_account(currency, account_root),
+                    proceeds,
+                    None,
+                    None,
+                    None,
+                    None,
                 )
             ]
             + lot_postings
@@ -599,9 +595,7 @@ class IBKRImporter(beangulp.Importer):
             CashAction.FEES: fee_rows,
         }
         for trx in cash_txns:
-            self._sort_cash_txn(
-                trx, div_buckets, roc_rows, interest_wht_rows, simple_dispatch
-            )
+            self._sort_cash_txn(trx, div_buckets, roc_rows, interest_wht_rows, simple_dispatch)
 
         return (
             self._emit_dividends(div_buckets, roc_rows, filepath, account_root)
@@ -632,9 +626,7 @@ class IBKRImporter(beangulp.Importer):
         else:
             logger.warning("IBKRImporter: unrecognised CashAction type: {!r}", t)
 
-    def _sort_dividend(
-        self, trx, t: CashAction, div_buckets: dict, roc_rows: list
-    ) -> None:
+    def _sort_dividend(self, trx, t: CashAction, div_buckets: dict, roc_rows: list) -> None:
         """Accumulate a DIVIDEND or PAYMENTINLIEU row."""
         if _ROC_STR in (trx.description or ""):
             roc_rows.append(trx)
@@ -681,9 +673,7 @@ class IBKRImporter(beangulp.Importer):
         """Emit deposit/withdrawal entries."""
         return [self._deposit(trx, filepath, account_root, deposit_from) for trx in rows]
 
-    def _emit_safe(
-        self, rows: list, method, label: str, filepath: str, account_root: str
-    ) -> list:
+    def _emit_safe(self, rows: list, method, label: str, filepath: str, account_root: str) -> list:
         """Call *method(trx, filepath, account_root)* for each row; warn and continue on error."""
         entries: list = []
         for trx in rows:
@@ -732,7 +722,9 @@ class IBKRImporter(beangulp.Importer):
             if wht_trx.currency != currency:
                 logger.warning(
                     "IBKRImporter: dividend/WHT currency mismatch for {}: {} vs {} -- skipping WHT",
-                    symbol, currency, wht_trx.currency,
+                    symbol,
+                    currency,
+                    wht_trx.currency,
                 )
             else:
                 wht_amt = amount.Amount(wht_trx.amount, wht_trx.currency)
@@ -852,7 +844,7 @@ class IBKRImporter(beangulp.Importer):
             self._liquidity_account(currency, account_root), amt, None, None, None, None
         )
         if deposit_from:
-            flag = "!"
+            flag = "*"
             postings = [
                 data.Posting(deposit_from, minus(amt), None, None, None, None),
                 ibkr_leg,
@@ -911,15 +903,10 @@ class IBKRImporter(beangulp.Importer):
     def _div_income_account(self, currency: str, symbol: str, account_root: str) -> str:
         if self._div_account:
             return self._div_account
-        return (
-            f"{account_root.replace('Assets', 'Income')}:{symbol}:{self._div_suffix}"
-        )
+        return f"{account_root.replace('Assets', 'Income')}:{symbol}:{self._div_suffix}"
 
     def _interest_account(self, currency: str, account_root: str) -> str:
-        return (
-            f"{account_root.replace('Assets', 'Income')}"
-            f":{self._interest_suffix}:{currency}"
-        )
+        return f"{account_root.replace('Assets', 'Income')}:{self._interest_suffix}:{currency}"
 
     def _wht_account_name(self, identifier: str, account_root: str) -> str:
         """WHT account for a symbol (dividends) or currency (interest WHT)."""
@@ -930,15 +917,10 @@ class IBKRImporter(beangulp.Importer):
     def _fees_account_name(self, currency: str, account_root: str) -> str:
         if self._fees_account:
             return self._fees_account
-        return (
-            f"{account_root.replace('Assets', 'Expenses')}"
-            f":{self._fees_suffix}:{currency}"
-        )
+        return f"{account_root.replace('Assets', 'Expenses')}:{self._fees_suffix}:{currency}"
 
     def _pnl_account(self, symbol: str, account_root: str) -> str:
-        return (
-            f"{account_root.replace('Assets', 'Income')}:{symbol}:{self._pnl_suffix}"
-        )
+        return f"{account_root.replace('Assets', 'Income')}:{symbol}:{self._pnl_suffix}"
 
     # ------------------------------------------------------------------
     # Symbol normalisation

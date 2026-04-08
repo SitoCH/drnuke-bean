@@ -43,7 +43,7 @@ _EXPECTED_XML = "ibkr_2024-01-01_2024-01-31.xml"
 # ---------------------------------------------------------------------------
 
 
-def _make_pipeline(source_dir: Path, output_file: Path) -> list[dict]:
+def _make_pipeline(source_dir: Path, bean_output_file: Path) -> list[dict]:
     """Build a pipeline entry wiring real IBKRImporter to the real flexquery fixture."""
     setup = make_ibkr_setup(
         token=_TOKEN,
@@ -55,14 +55,13 @@ def _make_pipeline(source_dir: Path, output_file: Path) -> list[dict]:
         account=_ACCOUNT,
         query_name=_QUERY_NAME,
         currency="EUR",
-        deposit_account="Assets:Bank:ZKB:EUR",
     )
     return [
         dict(
             name="ibkr",
             importer=importer,
             source_dir=source_dir,
-            output_file=output_file,
+            bean_output_file=bean_output_file,
             setup=setup,
         )
     ]
@@ -115,7 +114,7 @@ class TestFullRun:
         _run(_make_pipeline(src, out))
 
         _, errors, _ = bc_parser.parse_string(out.read_text())
-        assert errors == [], f"Beancount syntax errors:\n" + "\n".join(str(e) for e in errors)
+        assert errors == [], "Beancount syntax errors:\n" + "\n".join(str(e) for e in errors)
 
     def test_output_entry_count(self, tmp_path):
         """Fixture has ~24 entries (4 balances + 6 deposits + 5 sells + 4 buys
@@ -186,7 +185,7 @@ class TestDryRun:
         _run(_make_pipeline(src, out), dry_run=True, dry_run_file=str(dry))
 
         _, errors, _ = bc_parser.parse_string(dry.read_text())
-        assert errors == [], f"Beancount syntax errors:\n" + "\n".join(str(e) for e in errors)
+        assert errors == [], "Beancount syntax errors:\n" + "\n".join(str(e) for e in errors)
 
 
 # ===========================================================================
@@ -209,9 +208,9 @@ class TestCacheHandling:
         )
         pipeline = _make_pipeline(src, out)
 
-        _run(pipeline)              # first run: cache miss -> download
-        out.unlink()                # clear output for re-run
-        _run(pipeline)              # second run: cache hit -> no download
+        _run(pipeline)  # first run: cache miss -> download
+        out.unlink()  # clear output for re-run
+        _run(pipeline)  # second run: cache hit -> no download
 
         assert mock_dl.call_count == 1
 
@@ -228,4 +227,4 @@ class TestCacheHandling:
         _run(pipeline)
 
         _, errors, _ = bc_parser.parse_string(out.read_text())
-        assert errors == [], f"Beancount syntax errors:\n" + "\n".join(str(e) for e in errors)
+        assert errors == [], "Beancount syntax errors:\n" + "\n".join(str(e) for e in errors)

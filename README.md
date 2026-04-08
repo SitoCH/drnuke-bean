@@ -1,18 +1,18 @@
 # drnuke-bean
-a repo for some beancount tool 
+a repo for some beancount tool
 
-## Interactive Broker importer 
+## Interactive Broker importer
 based on pandas, inspired by tariochbctools
 This importer uses the IBKR FlexQuery service to fetch account information in API-style.
 
 default output looks like
 ```
-2020-03-31 * "VTI" "Dividend VTI"  
-  ISIN: "US9220428588"  
-  per share: "0.27920000"  
-  Incomes:Invest:IB:VTI:USD         -10.00 USD  
-  Expensess:Invest:IB:VTI:WTax:USD    1.50 USD  
-  Assets:Invest:IB:USD                8.50 USD  
+2020-03-31 * "VTI" "Dividend VTI"
+  ISIN: "US9220428588"
+  per share: "0.27920000"
+  Incomes:Invest:IB:VTI:USD         -10.00 USD
+  Expensess:Invest:IB:VTI:WTax:USD    1.50 USD
+  Assets:Invest:IB:USD                8.50 USD
 ```
 Insallation: make ibkr.py accessible for you python distro for importing. See the ConfigIBKR_example.py for some more guiding
 
@@ -44,7 +44,7 @@ Commodities.bean example:
 	asset-class: "stock"
 	price: "CHF:yahoo/0P0000A2DE.SW"
 	isin: "CH0017844686"
-	
+
 1970-01-01 commodity CSIFWEXCH
 	name: "CSIF (CH) III Equity World ex CH Blue - Pension Fund Plus ZB"
 	asset-class: "stock"
@@ -55,7 +55,7 @@ Commodities.bean example:
 	name: "CSIF (CH) III Equity World ex CH Small Cap Blue - Pension Fund DB"
 	asset-class: "stock"
 	price: "CHF:yahoo/0P0000YXR4.SW"
-	isin: "CH0214967314" 
+	isin: "CH0214967314"
 ```
 
 Config.py example:
@@ -107,7 +107,7 @@ plugin "drnukebean.plugins.spreading" "{'liability_acc_base': 'Assets:Receivable
 ```
 where the the parameter specifies the stem of the account that wil hold the temporary balance.
 
-For example, distribute a quartely PnL statement over the last 3 months: 
+For example, distribute a quartely PnL statement over the last 3 months:
 ```
 2020-12-31 * "MyInvestmentAccount" "PnL"
   p_spreading_frequency: "M"         ; pd.date_range() flag for 'monthly'
@@ -116,7 +116,7 @@ For example, distribute a quartely PnL statement over the last 3 months:
   Assets:MyInvestmentAccount:CHF   1000 CHF
   Income:MyInvestmentAccount:PnL  -1000 CHF
 ```
-becomes 
+becomes
 ```
 
 2020-12-31 * "MyInvestmentAccount" "PnL"

@@ -24,13 +24,11 @@ import xml.etree.ElementTree as ET
 from datetime import date, timedelta
 from pathlib import Path
 
-from loguru import logger
-
 import beangulp
-
 from beancount.core import data
 from beancount.core.amount import Amount
 from beancount.core.number import Decimal
+from loguru import logger
 
 _NS = "urn:iso:std:iso:20022:tech:xsd:camt.053.001.08"
 _NS_MAP = {"ns": _NS}
@@ -59,9 +57,7 @@ def _signed(number: Decimal, cdt_dbt: str) -> Decimal:
         return number
     if cdt_dbt == "DBIT":
         return -number
-    logger.warning(
-        "ZKBCamtImporter: unexpected CdtDbtInd value {!r}; treating as credit", cdt_dbt
-    )
+    logger.warning("ZKBCamtImporter: unexpected CdtDbtInd value {!r}; treating as credit", cdt_dbt)
     return number
 
 
@@ -96,9 +92,7 @@ class ZKBCamtImporter(beangulp.Importer):
                 len(self._iban),
             )
         self._account = account
-        self._balance_account = (
-            balance_account if balance_account is not None else account
-        )
+        self._balance_account = balance_account if balance_account is not None else account
         self._currency = currency
         self._extra_meta = extra_meta
 
@@ -201,14 +195,10 @@ class ZKBCamtImporter(beangulp.Importer):
                 return [self._card_txn(ntry, filepath, index)]
             tx_details = ntry.findall("ns:NtryDtls/ns:TxDtls", _NS_MAP)
             if tx_details:
-                return [
-                    self._transfer_txn(ntry, txd, filepath, index) for txd in tx_details
-                ]
+                return [self._transfer_txn(ntry, txd, filepath, index) for txd in tx_details]
             return [self._generic_txn(ntry, filepath, index)]
         except (ValueError, AttributeError) as exc:
-            logger.warning(
-                "ZKBCamtImporter: skipping entry {} in {}: {}", index, filepath, exc
-            )
+            logger.warning("ZKBCamtImporter: skipping entry {} in {}: {}", index, filepath, exc)
             return []
 
     # ------------------------------------------------------------------

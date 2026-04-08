@@ -62,8 +62,9 @@ def _importer(*, extra_meta: bool = False, balance_account: str | None = None) -
     )
 
 
-def _clbd(amount: str = "1000.00", ccy: str = "CHF", cdt_dbt: str = "CRDT",
-          date: str = "2024-01-31") -> str:
+def _clbd(
+    amount: str = "1000.00", ccy: str = "CHF", cdt_dbt: str = "CRDT", date: str = "2024-01-31"
+) -> str:
     return f"""
     <Bal>
       <Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp>
@@ -115,20 +116,16 @@ def _txdtls(
     # Counterparty: Dbtr for incoming (CRDT), Cdtr for outgoing (DBIT)
     if side == "CRDT":
         pty_xml = f"<Dbtr><Pty><Nm>{payee_nm}</Nm></Pty></Dbtr>"
-        acct_xml = (
-            f"<DbtrAcct><Id><IBAN>{payee_iban}</IBAN></Id></DbtrAcct>"
-            if payee_iban else ""
-        )
+        acct_xml = f"<DbtrAcct><Id><IBAN>{payee_iban}</IBAN></Id></DbtrAcct>" if payee_iban else ""
     else:
         pty_xml = f"<Cdtr><Pty><Nm>{payee_nm}</Nm></Pty></Cdtr>"
-        acct_xml = (
-            f"<CdtrAcct><Id><IBAN>{payee_iban}</IBAN></Id></CdtrAcct>"
-            if payee_iban else ""
-        )
+        acct_xml = f"<CdtrAcct><Id><IBAN>{payee_iban}</IBAN></Id></CdtrAcct>" if payee_iban else ""
     rmt = ""
     if structured_narration or qrr_ref:
         qrr_el = f"<CdtrRefInf><Ref>{qrr_ref}</Ref></CdtrRefInf>" if qrr_ref else ""
-        addtl_el = f"<AddtlRmtInf>{structured_narration}</AddtlRmtInf>" if structured_narration else ""
+        addtl_el = (
+            f"<AddtlRmtInf>{structured_narration}</AddtlRmtInf>" if structured_narration else ""
+        )
         rmt = f"<RmtInf><Strd>{qrr_el}{addtl_el}</Strd></RmtInf>"
     elif narration:
         rmt = f"<RmtInf><Ustrd>{narration}</Ustrd></RmtInf>"
@@ -340,24 +337,30 @@ class TestBatch:
 
 class TestCardTransaction:
     def test_card_txn_amount_negative(self, tmp_path):
-        path = _write(tmp_path, _camt(entries=_ntry(
-            amount="75.30", cdt_dbt="DBIT", cardtx=_cardtx("TERM001"), addtl="Groceries"
-        )))
+        path = _write(
+            tmp_path,
+            _camt(
+                entries=_ntry(
+                    amount="75.30", cdt_dbt="DBIT", cardtx=_cardtx("TERM001"), addtl="Groceries"
+                )
+            ),
+        )
         txns = [e for e in _importer().extract(path, []) if isinstance(e, data.Transaction)]
         assert len(txns) == 1
         assert txns[0].postings[0].units.number == Decimal("-75.30")
 
     def test_card_txn_payee_from_poi_id(self, tmp_path):
-        path = _write(tmp_path, _camt(entries=_ntry(
-            cdt_dbt="DBIT", cardtx=_cardtx("SUPERMARKET01")
-        )))
+        path = _write(
+            tmp_path, _camt(entries=_ntry(cdt_dbt="DBIT", cardtx=_cardtx("SUPERMARKET01")))
+        )
         txns = [e for e in _importer().extract(path, []) if isinstance(e, data.Transaction)]
         assert txns[0].payee == "SUPERMARKET01"
 
     def test_card_txn_narration_from_addtl_ntry_inf(self, tmp_path):
-        path = _write(tmp_path, _camt(entries=_ntry(
-            cdt_dbt="DBIT", cardtx=_cardtx(), addtl="Purchase at Coop"
-        )))
+        path = _write(
+            tmp_path,
+            _camt(entries=_ntry(cdt_dbt="DBIT", cardtx=_cardtx(), addtl="Purchase at Coop")),
+        )
         txns = [e for e in _importer().extract(path, []) if isinstance(e, data.Transaction)]
         assert txns[0].narration == "Purchase at Coop"
 
@@ -393,37 +396,53 @@ class TestExtraMeta:
     def test_ref_populated_for_transfer(self, tmp_path):
         td = _txdtls(ref="REF0001", side="CRDT")
         path = _write(tmp_path, _camt(entries=_ntry(txdtls=td)))
-        txns = [e for e in _importer(extra_meta=True).extract(path, [])
-                if isinstance(e, data.Transaction)]
+        txns = [
+            e
+            for e in _importer(extra_meta=True).extract(path, [])
+            if isinstance(e, data.Transaction)
+        ]
         assert txns[0].meta.get("ref") == "REF0001"
 
     def test_counterparty_iban_populated(self, tmp_path):
         td = _txdtls(payee_iban="CH5699999999999999999", side="CRDT")
         path = _write(tmp_path, _camt(entries=_ntry(txdtls=td)))
-        txns = [e for e in _importer(extra_meta=True).extract(path, [])
-                if isinstance(e, data.Transaction)]
+        txns = [
+            e
+            for e in _importer(extra_meta=True).extract(path, [])
+            if isinstance(e, data.Transaction)
+        ]
         assert txns[0].meta.get("counterparty_iban") == "CH5699999999999999999"
 
     def test_qrr_ref_populated(self, tmp_path):
         td = _txdtls(qrr_ref="RF18539007547034", structured_narration="Rent", side="DBIT")
         path = _write(tmp_path, _camt(entries=_ntry(cdt_dbt="DBIT", txdtls=td)))
-        txns = [e for e in _importer(extra_meta=True).extract(path, [])
-                if isinstance(e, data.Transaction)]
+        txns = [
+            e
+            for e in _importer(extra_meta=True).extract(path, [])
+            if isinstance(e, data.Transaction)
+        ]
         assert txns[0].meta.get("qrr_ref") == "RF18539007547034"
 
     def test_extra_meta_false_leaves_no_ref(self, tmp_path):
         td = _txdtls(ref="REF9999", side="CRDT")
         path = _write(tmp_path, _camt(entries=_ntry(txdtls=td)))
-        txns = [e for e in _importer(extra_meta=False).extract(path, [])
-                if isinstance(e, data.Transaction)]
+        txns = [
+            e
+            for e in _importer(extra_meta=False).extract(path, [])
+            if isinstance(e, data.Transaction)
+        ]
         assert "ref" not in txns[0].meta
 
     def test_card_ref_populated(self, tmp_path):
-        path = _write(tmp_path, _camt(entries=_ntry(
-            cdt_dbt="DBIT", cardtx=_cardtx(), acct_svcr_ref="CARDREF01"
-        )))
-        txns = [e for e in _importer(extra_meta=True).extract(path, [])
-                if isinstance(e, data.Transaction)]
+        path = _write(
+            tmp_path,
+            _camt(entries=_ntry(cdt_dbt="DBIT", cardtx=_cardtx(), acct_svcr_ref="CARDREF01")),
+        )
+        txns = [
+            e
+            for e in _importer(extra_meta=True).extract(path, [])
+            if isinstance(e, data.Transaction)
+        ]
         assert txns[0].meta.get("ref") == "CARDREF01"
 
 
@@ -506,31 +525,39 @@ class TestIntegration:
         assert len(transactions) == 6
 
     def test_credit_transfer(self, transactions):
-        hits = [t for t in transactions
-                if t.date == datetime.date(2024, 1, 10)
-                and t.payee == "Example Payee A"]
+        hits = [
+            t
+            for t in transactions
+            if t.date == datetime.date(2024, 1, 10) and t.payee == "Example Payee A"
+        ]
         assert len(hits) == 1
         assert hits[0].postings[0].units.number == Decimal("1000.00")
         assert hits[0].narration == "Salary January"
 
     def test_debit_transfer(self, transactions):
-        hits = [t for t in transactions
-                if t.date == datetime.date(2024, 1, 15)
-                and t.payee == "Example Payee B"]
+        hits = [
+            t
+            for t in transactions
+            if t.date == datetime.date(2024, 1, 15) and t.payee == "Example Payee B"
+        ]
         assert len(hits) == 1
         assert hits[0].postings[0].units.number == Decimal("-500.50")
         assert hits[0].narration == "Rent payment"  # structured AddtlRmtInf wins
 
     def test_debit_transfer_qrr_ref(self, transactions):
-        hits = [t for t in transactions
-                if t.date == datetime.date(2024, 1, 15)
-                and t.payee == "Example Payee B"]
+        hits = [
+            t
+            for t in transactions
+            if t.date == datetime.date(2024, 1, 15) and t.payee == "Example Payee B"
+        ]
         assert hits[0].meta.get("qrr_ref") == "RF18539007547034"
 
     def test_debit_transfer_counterparty_iban(self, transactions):
-        hits = [t for t in transactions
-                if t.date == datetime.date(2024, 1, 15)
-                and t.payee == "Example Payee B"]
+        hits = [
+            t
+            for t in transactions
+            if t.date == datetime.date(2024, 1, 15) and t.payee == "Example Payee B"
+        ]
         assert hits[0].meta.get("counterparty_iban") == "CH5611111111111111111"
 
     def test_batch_produces_two_transactions(self, transactions):

@@ -6,20 +6,10 @@ A beancount plugin for regular budgeting transactions
 
 """
 
-from beancount.core import account as acc
-from beancount.core import account_types
-from beancount.core import data
 from beancount.core.amount import Amount
-from beancount.core.data import Transaction
-from beancount.parser import options
 from beancount.core.number import Decimal
 
-import datetime
-import pandas as pd
-from copy import deepcopy
-
-
-__plugins__ = ['partner']
+__plugins__ = ["partner"]
 
 
 def partner(entries, options_map):
@@ -52,7 +42,7 @@ def apply_partner(entry):
     # make transactions
     new_postings = []
     for pos in entry.postings:
-        new_number = round(pos.units.number*factor, 2)
+        new_number = round(pos.units.number * factor, 2)
         units = Amount(new_number, pos.units.currency)
         new_postings.append(pos._replace(units=units))
 

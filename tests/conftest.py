@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import datetime
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
-
 from ibflex import Types
 from ibflex.enums import BuySell, CashAction
 
@@ -154,7 +152,7 @@ def make_sell_trade(
 def make_closed_lot(
     symbol: str = "VT",
     currency: str = "USD",
-    quantity: str = "5",   # positive: shares consumed from this lot
+    quantity: str = "5",  # positive: shares consumed from this lot
     trade_price: str = "100.00",
     open_date_time: datetime.datetime = OPEN_DT,
 ) -> Types.Trade:

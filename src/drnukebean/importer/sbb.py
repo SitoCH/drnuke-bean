@@ -32,7 +32,7 @@ run_imports.py wiring example:
             'name':        'sbb',
             'importer':    _sbb,
             'source_dir':  cfg.DOWNLOADS / 'sbb',
-            'output_file': cfg.LEDGER_DIR / 'SBB.bean',
+            'bean_output_file': cfg.LEDGER_DIR / 'SBB.bean',
             'fixes':       fixes_sbb,
         },
     ]
@@ -182,6 +182,8 @@ class SBBImporter(beangulp.Importer):
 
         payee = "SBB"
         narration = _col(row, "Strecke", "Route").strip().replace("→", "->")
+        if not narration:
+            narration = _col(row, "Tarif", "Tariff").strip()
         reisedatum_str = _col(row, "Reisedatum", "Travel date").strip()
         try:
             reisedatum = _parse_date(reisedatum_str)

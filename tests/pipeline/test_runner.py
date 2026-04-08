@@ -23,22 +23,17 @@ import pytest
 from beancount.core import data
 from beancount.core.amount import Amount
 
-import drnukebean.pipeline.runner as runner_module
 from drnukebean.pipeline.runner import (
     FixesWrapper,
     _append_entries,
     _build_wrapped,
-    _cli_dates,
     _last_month,
     _load_existing,
     _make_dry_path,
     _move_statements,
-    _parse_month,
-    _resolve_cli,
     _resolve_date_range,
     run_all,
 )
-
 
 # ---------------------------------------------------------------------------
 # Shared builders
@@ -112,13 +107,13 @@ def _pipeline(
     """Build a minimal pipeline dict backed by a tmp_path source dir."""
     source_dir = tmp_path / name / "source"
     source_dir.mkdir(parents=True)
-    output_file = tmp_path / name / "output.bean"
+    bean_output_file = tmp_path / name / "output.bean"
     importer = StubImporter(account=account, pattern=pattern, entries=entries)
     d: dict = {
         "name": name,
         "importer": importer,
         "source_dir": str(source_dir),
-        "output_file": str(output_file),
+        "bean_output_file": str(bean_output_file),
     }
     if setup is not None:
         d["setup"] = setup
@@ -173,22 +168,6 @@ class TestFixesWrapper:
 # ===========================================================================
 
 
-class TestParseMonth:
-    def test_valid_format(self):
-        assert _parse_month("2024-01") == datetime.date(2024, 1, 1)
-
-    def test_december(self):
-        assert _parse_month("2023-12") == datetime.date(2023, 12, 1)
-
-    def test_invalid_raises(self):
-        with pytest.raises(ValueError, match="YYYY-MM"):
-            _parse_month("2024")
-
-    def test_invalid_month_13_raises(self):
-        with pytest.raises(ValueError):
-            _parse_month("2024-13")
-
-
 class TestLastMonth:
     def test_returns_first_day_of_month(self):
         d = _last_month()
@@ -203,6 +182,7 @@ class TestLastMonth:
         last = _last_month()
         # Advancing last month by its days-in-month must land on first_this
         import calendar
+
         days_in_last = calendar.monthrange(last.year, last.month)[1]
         assert last + datetime.timedelta(days=days_in_last) == first_this
 
@@ -210,53 +190,6 @@ class TestLastMonth:
 # ===========================================================================
 # CLI argument parsing
 # ===========================================================================
-
-
-class TestResolveCli:
-    def test_no_args_returns_empty_filter(self, monkeypatch):
-        monkeypatch.setattr(sys, "argv", ["run_imports.py"])
-        dry, names = _resolve_cli(False)
-        assert dry is False
-        assert names == set()
-
-    def test_dry_run_flag_detected(self, monkeypatch):
-        monkeypatch.setattr(sys, "argv", ["run_imports.py", "--dry-run"])
-        dry, names = _resolve_cli(False)
-        assert dry is True
-
-    def test_name_filter_collected(self, monkeypatch):
-        monkeypatch.setattr(sys, "argv", ["run_imports.py", "zkb", "ibkr"])
-        _, names = _resolve_cli(False)
-        assert names == {"zkb", "ibkr"}
-
-    def test_from_to_excluded_from_name_filter(self, monkeypatch):
-        monkeypatch.setattr(sys, "argv", ["run_imports.py", "--from", "2024-01", "zkb"])
-        _, names = _resolve_cli(False)
-        assert names == {"zkb"}
-        assert "2024-01" not in names
-
-    def test_programmatic_dry_run_preserved_when_no_flag(self, monkeypatch):
-        monkeypatch.setattr(sys, "argv", ["run_imports.py"])
-        dry, _ = _resolve_cli(True)
-        assert dry is True
-
-
-class TestCliDates:
-    def test_no_dates_returns_none_none(self, monkeypatch):
-        monkeypatch.setattr(sys, "argv", ["run_imports.py"])
-        assert _cli_dates() == (None, None)
-
-    def test_from_only(self, monkeypatch):
-        monkeypatch.setattr(sys, "argv", ["run_imports.py", "--from", "2024-01"])
-        from_d, to_d = _cli_dates()
-        assert from_d == datetime.date(2024, 1, 1)
-        assert to_d is None
-
-    def test_from_and_to(self, monkeypatch):
-        monkeypatch.setattr(sys, "argv", ["run_imports.py", "--from", "2024-01", "--to", "2024-03"])
-        from_d, to_d = _cli_dates()
-        assert from_d == datetime.date(2024, 1, 1)
-        assert to_d == datetime.date(2024, 3, 1)
 
 
 class TestResolveDateRange:
@@ -269,9 +202,7 @@ class TestResolveDateRange:
 
     def test_explicit_programmatic_range(self, monkeypatch):
         monkeypatch.setattr(sys, "argv", ["run_imports.py"])
-        d_from, d_to = _resolve_date_range(
-            datetime.date(2024, 1, 1), datetime.date(2024, 3, 1)
-        )
+        d_from, d_to = _resolve_date_range(datetime.date(2024, 1, 1), datetime.date(2024, 3, 1))
         assert d_from == datetime.date(2024, 1, 1)
         assert d_to == datetime.date(2024, 3, 1)
 
@@ -391,18 +322,21 @@ class TestBuildWrapped:
 
     def test_fixes_wrapper_applied(self):
         from drnukebean.pipeline.runner import FixesWrapper
+
         imp = StubImporter()
         wrapped = _build_wrapped(imp, lambda e: e, False)
         assert isinstance(wrapped, FixesWrapper)
 
     def test_predict_wrapper_applied(self):
         from smart_importer.wrapper import ImporterWrapper
+
         imp = StubImporter()
         wrapped = _build_wrapped(imp, None, True)
         assert isinstance(wrapped, ImporterWrapper)
 
     def test_fixes_and_predict_both_applied(self):
         from smart_importer.wrapper import ImporterWrapper
+
         imp = StubImporter()
         wrapped = _build_wrapped(imp, lambda e: e, True)
         assert isinstance(wrapped, ImporterWrapper)
@@ -495,8 +429,13 @@ class TestRunAll:
         p = _pipeline(tmp_path)
         self._source_file(p)
         dry_path = tmp_path / "dry.bean"
-        run_all([p], dry_run=True, dry_run_file=str(dry_path),
-                date_from=datetime.date(2024, 1, 1), date_to=datetime.date(2024, 1, 1))
+        run_all(
+            [p],
+            dry_run=True,
+            dry_run_file=str(dry_path),
+            date_from=datetime.date(2024, 1, 1),
+            date_to=datetime.date(2024, 1, 1),
+        )
         assert dry_path.exists()
         assert "Test" in dry_path.read_text()
 
@@ -505,35 +444,54 @@ class TestRunAll:
         p = _pipeline(tmp_path)
         self._source_file(p)
         dry_path = tmp_path / "dry.bean"
-        run_all([p], dry_run=True, dry_run_file=str(dry_path),
-                date_from=datetime.date(2024, 1, 1), date_to=datetime.date(2024, 1, 1))
-        assert not Path(p["output_file"]).exists()
+        run_all(
+            [p],
+            dry_run=True,
+            dry_run_file=str(dry_path),
+            date_from=datetime.date(2024, 1, 1),
+            date_to=datetime.date(2024, 1, 1),
+        )
+        assert not Path(p["bean_output_file"]).exists()
 
     def test_dry_run_does_not_move_source_files(self, tmp_path, monkeypatch):
         monkeypatch.setattr(sys, "argv", ["run_imports.py"])
         p = _pipeline(tmp_path)
         src = self._source_file(p)
         dest_root = tmp_path / "archive"
-        run_all([p], dry_run=True, dry_run_file=str(tmp_path / "dry.bean"),
-                statement_dest=str(dest_root),
-                date_from=datetime.date(2024, 1, 1), date_to=datetime.date(2024, 1, 1))
+        run_all(
+            [p],
+            dry_run=True,
+            dry_run_file=str(tmp_path / "dry.bean"),
+            statement_dest=str(dest_root),
+            date_from=datetime.date(2024, 1, 1),
+            date_to=datetime.date(2024, 1, 1),
+        )
         assert src.exists()
 
     def test_full_run_writes_to_output_file(self, tmp_path, monkeypatch):
         monkeypatch.setattr(sys, "argv", ["run_imports.py"])
         p = _pipeline(tmp_path)
         self._source_file(p)
-        run_all([p], dry_run=False,
-                date_from=datetime.date(2024, 1, 1), date_to=datetime.date(2024, 1, 1))
-        assert Path(p["output_file"]).exists()
+        run_all(
+            [p],
+            dry_run=False,
+            date_from=datetime.date(2024, 1, 1),
+            date_to=datetime.date(2024, 1, 1),
+        )
+        assert Path(p["bean_output_file"]).exists()
 
     def test_full_run_moves_files_when_dest_root_given(self, tmp_path, monkeypatch):
         monkeypatch.setattr(sys, "argv", ["run_imports.py"])
         p = _pipeline(tmp_path, account="Assets:Invest:IBKR")
         src = self._source_file(p)
         dest_root = tmp_path / "archive"
-        run_all([p], dry_run=False, statement_dest=str(dest_root),
-                date_from=datetime.date(2024, 1, 1), date_to=datetime.date(2024, 1, 1))
+        run_all(
+            [p],
+            dry_run=False,
+            statement_dest=str(dest_root),
+            date_from=datetime.date(2024, 1, 1),
+            date_to=datetime.date(2024, 1, 1),
+        )
         assert not src.exists()
         assert (dest_root / "Assets" / "Invest" / "IBKR" / src.name).exists()
 
@@ -541,8 +499,12 @@ class TestRunAll:
         monkeypatch.setattr(sys, "argv", ["run_imports.py"])
         p = _pipeline(tmp_path)
         src = self._source_file(p)
-        run_all([p], dry_run=False,
-                date_from=datetime.date(2024, 1, 1), date_to=datetime.date(2024, 1, 1))
+        run_all(
+            [p],
+            dry_run=False,
+            date_from=datetime.date(2024, 1, 1),
+            date_to=datetime.date(2024, 1, 1),
+        )
         assert src.exists()
 
     def test_name_filter_via_cli_skips_non_matching(self, tmp_path, monkeypatch):
@@ -551,14 +513,19 @@ class TestRunAll:
         p_ibkr = _pipeline(tmp_path, name="ibkr", pattern="ibkr_stmt")
         self._source_file(p_zkb, "zkb_stmt.xml")
         self._source_file(p_ibkr, "ibkr_stmt.xml")
-        run_all([p_zkb, p_ibkr], dry_run=False,
-                date_from=datetime.date(2024, 1, 1), date_to=datetime.date(2024, 1, 1))
-        assert Path(p_zkb["output_file"]).exists()
-        assert not Path(p_ibkr["output_file"]).exists()
+        run_all(
+            [p_zkb, p_ibkr],
+            dry_run=False,
+            date_from=datetime.date(2024, 1, 1),
+            date_to=datetime.date(2024, 1, 1),
+        )
+        assert Path(p_zkb["bean_output_file"]).exists()
+        assert not Path(p_ibkr["bean_output_file"]).exists()
 
     def test_setup_called_with_resolved_dates(self, tmp_path, monkeypatch):
         monkeypatch.setattr(sys, "argv", ["run_imports.py"])
         calls = []
+
         def capture_setup(d_from, d_to):
             calls.append((d_from, d_to))
 
@@ -571,18 +538,28 @@ class TestRunAll:
         monkeypatch.setattr(sys, "argv", ["run_imports.py"])
         p = _pipeline(tmp_path)
         # No source files created — source_dir is empty
-        run_all([p], dry_run=False,
-                date_from=datetime.date(2024, 1, 1), date_to=datetime.date(2024, 1, 1))
-        assert not Path(p["output_file"]).exists()
+        run_all(
+            [p],
+            dry_run=False,
+            date_from=datetime.date(2024, 1, 1),
+            date_to=datetime.date(2024, 1, 1),
+        )
+        assert not Path(p["bean_output_file"]).exists()
 
     def test_fixes_applied_in_run_all(self, tmp_path, monkeypatch):
         monkeypatch.setattr(sys, "argv", ["run_imports.py"])
+
         def tag_it(txn):
             return txn._replace(narration="FIXED: " + txn.narration)
 
         p = _pipeline(tmp_path, fixes=tag_it)
         self._source_file(p)
         dry_path = tmp_path / "dry.bean"
-        run_all([p], dry_run=True, dry_run_file=str(dry_path),
-                date_from=datetime.date(2024, 1, 1), date_to=datetime.date(2024, 1, 1))
+        run_all(
+            [p],
+            dry_run=True,
+            dry_run_file=str(dry_path),
+            date_from=datetime.date(2024, 1, 1),
+            date_to=datetime.date(2024, 1, 1),
+        )
         assert "FIXED: Test" in dry_path.read_text()

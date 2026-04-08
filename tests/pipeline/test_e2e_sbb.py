@@ -33,7 +33,7 @@ _EXPENSES = "Expenses:Transport:SBB"
 # ---------------------------------------------------------------------------
 
 
-def _make_pipeline(source_dir: Path, output_file: Path, *, bank: str = _BANK) -> list[dict]:
+def _make_pipeline(source_dir: Path, bean_output_file: Path, *, bank: str = _BANK) -> list[dict]:
     """Pipeline entry wiring SBBImporter to the fixture copied into source_dir."""
     shutil.copy(FIXTURE, source_dir / FIXTURE.name)
     importer = SBBImporter(
@@ -46,7 +46,7 @@ def _make_pipeline(source_dir: Path, output_file: Path, *, bank: str = _BANK) ->
             "name": "sbb",
             "importer": importer,
             "source_dir": source_dir,
-            "output_file": output_file,
+            "bean_output_file": bean_output_file,
             "predict": False,
         }
     ]

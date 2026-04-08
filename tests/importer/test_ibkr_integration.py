@@ -113,8 +113,11 @@ class TestBalances:
 
     def test_stmt2_usd_balance_amount(self, balances):
         # ibflex rounds CashReportCurrency.endingCash to 2 d.p. ("953.274810000" -> 953.27)
-        hits = [b for b in balances if b.amount.currency == "USD"
-                and b.amount.number == Decimal("953.27")]
+        hits = [
+            b
+            for b in balances
+            if b.amount.currency == "USD" and b.amount.number == Decimal("953.27")
+        ]
         assert len(hits) == 1
 
     def test_balance_date_is_day_after_period_end(self, balances):
@@ -130,7 +133,8 @@ class TestBalances:
 class TestBuyTrades:
     def test_appl_buy_12_stmt1(self, transactions):
         hits = [
-            t for t in transactions
+            t
+            for t in transactions
             if t.date == datetime.date(2024, 1, 17)
             and any(
                 p.account == f"{ACCOUNT}:APPL"
@@ -143,7 +147,8 @@ class TestBuyTrades:
 
     def test_appl_buy_45_stmt2(self, transactions):
         hits = [
-            t for t in transactions
+            t
+            for t in transactions
             if t.date == datetime.date(2024, 1, 22)
             and any(
                 p.account == f"{ACCOUNT}:APPL"
@@ -156,7 +161,8 @@ class TestBuyTrades:
 
     def test_eunk_buy_1230_stmt2(self, transactions):
         hits = [
-            t for t in transactions
+            t
+            for t in transactions
             if t.date == datetime.date(2024, 1, 15)
             and any(
                 p.account == f"{ACCOUNT}:EUNK"
@@ -170,10 +176,13 @@ class TestBuyTrades:
     def test_buy_has_cost_spec(self, transactions):
         # APPL BUY 12: asset posting should carry a CostSpec
         appl_buy = next(
-            t for t in transactions
+            t
+            for t in transactions
             if t.date == datetime.date(2024, 1, 17)
             and any(
-                p.account == f"{ACCOUNT}:APPL" and p.units is not None and p.units.number == Decimal("12")
+                p.account == f"{ACCOUNT}:APPL"
+                and p.units is not None
+                and p.units.number == Decimal("12")
                 for p in t.postings
             )
         )
@@ -190,11 +199,10 @@ class TestBuyTrades:
 class TestSellTrades:
     def test_msft_sell_present(self, transactions):
         hits = [
-            t for t in transactions
+            t
+            for t in transactions
             if any(
-                p.account == f"{ACCOUNT}:MSFT"
-                and p.units is not None
-                and p.units.number < 0
+                p.account == f"{ACCOUNT}:MSFT" and p.units is not None and p.units.number < 0
                 for p in t.postings
             )
         ]
@@ -203,7 +211,8 @@ class TestSellTrades:
     def test_msft_sell_lot_open_date(self, transactions):
         # CLOSED_LOT has openDateTime="2023-12-04" -> cost.date should be 2023-12-04
         msft_sell = next(
-            t for t in transactions
+            t
+            for t in transactions
             if any(
                 p.account == f"{ACCOUNT}:MSFT" and p.units is not None and p.units.number < 0
                 for p in t.postings
@@ -216,7 +225,8 @@ class TestSellTrades:
     def test_four_appl_sell_batches_on_2024_01_08(self, transactions):
         # Four separate SELL executions for APPL on the same day (same order ID)
         appl_sells = [
-            t for t in transactions
+            t
+            for t in transactions
             if t.date == datetime.date(2024, 1, 8)
             and any(
                 p.account == f"{ACCOUNT}:APPL" and p.units is not None and p.units.number < 0
@@ -227,7 +237,8 @@ class TestSellTrades:
 
     def test_all_sells_have_pnl_posting(self, transactions):
         sell_txns = [
-            t for t in transactions
+            t
+            for t in transactions
             if any(
                 p.account in (f"{ACCOUNT}:MSFT", f"{ACCOUNT}:APPL")
                 and p.units is not None
@@ -252,7 +263,8 @@ class TestForexTrades:
     def test_eurusd_forex_stmt1(self, transactions):
         # EUR.USD SELL on 2024-01-17 -> postings in EUR and USD accounts
         hits = [
-            t for t in transactions
+            t
+            for t in transactions
             if t.date == datetime.date(2024, 1, 17)
             and any(p.account == f"{ACCOUNT}:EUR" for p in t.postings)
             and any(p.account == f"{ACCOUNT}:USD" for p in t.postings)
@@ -262,7 +274,8 @@ class TestForexTrades:
     def test_usdeur_large_forex_stmt2(self, transactions):
         # USD.EUR SELL -285000 on 2024-01-08
         hits = [
-            t for t in transactions
+            t
+            for t in transactions
             if t.date == datetime.date(2024, 1, 8)
             and any(p.account == f"{ACCOUNT}:USD" for p in t.postings)
             and any(p.account == f"{ACCOUNT}:EUR" for p in t.postings)
@@ -273,7 +286,8 @@ class TestForexTrades:
         # USD.EUR SELL -0.38754321: tradeDate="2024-01-11", dateTime="2024-01-10;22:01:20"
         # Importer uses tradeDate, not dateTime, so transaction date is 2024-01-11
         hits = [
-            t for t in transactions
+            t
+            for t in transactions
             if t.date == datetime.date(2024, 1, 11)
             and any(p.account == f"{ACCOUNT}:USD" for p in t.postings)
             and any(p.account == f"{ACCOUNT}:EUR" for p in t.postings)
@@ -325,7 +339,8 @@ class TestDividends:
 class TestInterestAndDeposits:
     def test_interest_on_2024_01_31(self, transactions):
         hits = [
-            t for t in transactions
+            t
+            for t in transactions
             if t.date == datetime.date(2024, 1, 31)
             and any("Income" in p.account for p in t.postings)
         ]
@@ -335,15 +350,15 @@ class TestInterestAndDeposits:
         # stmt1: +650, +175, -125 EUR
         # stmt2: -231564.75, +125, +187234.56 EUR
         deposit_txns = [
-            t for t in transactions
-            if any(p.account == "Assets:Bank:ZKB:EUR" for p in t.postings)
+            t for t in transactions if any(p.account == "Assets:Bank:ZKB:EUR" for p in t.postings)
         ]
         assert len(deposit_txns) == 6
 
     def test_withdrawal_produces_negative_liquidity(self, transactions):
         # stmt1: -125 EUR on 2024-01-23
         hits = [
-            t for t in transactions
+            t
+            for t in transactions
             if t.date == datetime.date(2024, 1, 23)
             and any(
                 p.account == f"{ACCOUNT}:EUR"
@@ -399,18 +414,19 @@ class TestAccountMap:
             for p in (e.postings if isinstance(e, data.Transaction) else [])
         }
         # Balance accounts
-        all_accounts |= {
-            e.account for e in mapped_entries if isinstance(e, data.Balance)
-        }
+        all_accounts |= {e.account for e in mapped_entries if isinstance(e, data.Balance)}
         ibkr_accounts = {a for a in all_accounts if "IBKR" in a}
-        assert not any(a.startswith(f"{ACCOUNT}:") and not (
-            a.startswith(_ACCOUNT_ROOT_1) or a.startswith(_ACCOUNT_ROOT_2)
-        ) for a in ibkr_accounts)
+        assert not any(
+            a.startswith(f"{ACCOUNT}:")
+            and not (a.startswith(_ACCOUNT_ROOT_1) or a.startswith(_ACCOUNT_ROOT_2))
+            for a in ibkr_accounts
+        )
 
     def test_stmt1_appl_buy_routes_to_trading(self, mapped_transactions):
         # APPL BUY 12 on 2024-01-17 belongs to U88776655 -> _ACCOUNT_ROOT_1
         hits = [
-            t for t in mapped_transactions
+            t
+            for t in mapped_transactions
             if t.date == datetime.date(2024, 1, 17)
             and any(
                 p.account == f"{_ACCOUNT_ROOT_1}:APPL"
@@ -424,7 +440,8 @@ class TestAccountMap:
     def test_stmt2_eunk_buy_routes_to_pension(self, mapped_transactions):
         # EUNK BUY 1230 on 2024-01-15 belongs to U99887766 -> _ACCOUNT_ROOT_2
         hits = [
-            t for t in mapped_transactions
+            t
+            for t in mapped_transactions
             if t.date == datetime.date(2024, 1, 15)
             and any(
                 p.account == f"{_ACCOUNT_ROOT_2}:EUNK"

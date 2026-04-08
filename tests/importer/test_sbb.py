@@ -352,7 +352,9 @@ class TestExtractNarration:
         path = _write(
             tmp_path,
             _EN_HEADER
-            + _en_row(route="Zürich HB -> Bülach", travel_date="10.01.2026", order_date="10.01.2026"),
+            + _en_row(
+                route="Zürich HB -> Bülach", travel_date="10.01.2026", order_date="10.01.2026"
+            ),
         )
         txn = _importer().extract(path, [])[0]
         assert txn.narration == "Zürich HB -> Bülach"
@@ -362,7 +364,9 @@ class TestExtractNarration:
         path = _write(
             tmp_path,
             _EN_HEADER
-            + _en_row(route="Zürich HB -> München Hbf", travel_date="14.01.2026", order_date="10.01.2026"),
+            + _en_row(
+                route="Zürich HB -> München Hbf", travel_date="14.01.2026", order_date="10.01.2026"
+            ),
         )
         txn = _importer().extract(path, [])[0]
         assert txn.narration == "Zürich HB -> München Hbf, 14.01.2026"
@@ -371,20 +375,27 @@ class TestExtractNarration:
         # Ensure no trailing comma or date when dates match
         path = _write(
             tmp_path,
-            _EN_HEADER + _en_row(route="Bern -> Zürich", travel_date="05.03.2026", order_date="05.03.2026"),
+            _EN_HEADER
+            + _en_row(route="Bern -> Zürich", travel_date="05.03.2026", order_date="05.03.2026"),
         )
         txn = _importer().extract(path, [])[0]
         assert txn.narration == "Bern -> Zürich"
 
-    def test_empty_route_date_different_gives_date_only(self, tmp_path):
-        # Day Pass: no route, but travel_date differs -> narration is just the date
+    def test_empty_route_date_different_gives_tariff_with_date(self, tmp_path):
+        # Day Pass: no route -> tariff used; travel_date differs -> date appended
         path = _write(
             tmp_path,
             _EN_HEADER
-            + _en_row(route="", via="", travel_date="07.03.2026", order_date="06.03.2026"),
+            + _en_row(
+                tariff="ZVV 24h-Ticket",
+                route="",
+                via="",
+                travel_date="07.03.2026",
+                order_date="06.03.2026",
+            ),
         )
         txn = _importer().extract(path, [])[0]
-        assert txn.narration == "07.03.2026"
+        assert txn.narration == "ZVV 24h-Ticket, 07.03.2026"
 
     def test_de_narration_date_appended(self, tmp_path):
         # DE column names; travel date differs -> suffix applied
@@ -403,15 +414,14 @@ class TestExtractNarration:
 
 
 class TestExtractEdgeCases:
-    def test_empty_route_gives_empty_narration(self, tmp_path):
-        # Day Pass rows have no Route
+    def test_empty_route_uses_tariff_as_narration(self, tmp_path):
+        # Day Pass rows have no Route -> tariff used as narration fallback
         path = _write(
             tmp_path,
-            _EN_HEADER
-            + _en_row(route="", via="", tariff="Day Pass for the Half Fare Travelcard"),
+            _EN_HEADER + _en_row(route="", via="", tariff="Day Pass for the Half Fare Travelcard"),
         )
         txn = _importer().extract(path, [])[0]
-        assert txn.narration == ""
+        assert txn.narration == "Day Pass for the Half Fare Travelcard"
 
     def test_price_with_apostrophe_separator(self, tmp_path):
         # Swiss locale uses apostrophe as thousands separator
@@ -422,8 +432,7 @@ class TestExtractEdgeCases:
     def test_bad_date_emits_note_not_crash(self, tmp_path):
         path = _write(
             tmp_path,
-            _EN_HEADER
-            + _en_row(order_date="not-a-date"),
+            _EN_HEADER + _en_row(order_date="not-a-date"),
         )
         entries = _importer().extract(path, [])
         assert len(entries) == 1
@@ -444,7 +453,7 @@ class TestExtractEdgeCases:
     def test_good_rows_after_bad_row_still_extracted(self, tmp_path):
         content = (
             _EN_HEADER
-            + _en_row(order_date="bad-date")   # bad row -> Note
+            + _en_row(order_date="bad-date")  # bad row -> Note
             + _en_row(order_date="15.01.2026")  # good row -> Transaction
         )
         path = _write(tmp_path, content)
@@ -544,12 +553,12 @@ class TestIntegration:
         assert hit[0].postings[0].account == _HALBTAX
 
     def test_day_pass_row(self, _transactions):
-        # Day Pass row: order_date=06.03.2024, price=86.00, empty route,
-        # travel_date=07.03.2024 (differs) -> narration is just the travel date
+        # Day Pass row: order_date=06.03.2024, price=86.00, empty route -> tariff used,
+        # travel_date=07.03.2024 (differs) -> date appended
         hit = [t for t in _transactions if t.date == datetime.date(2024, 3, 6)]
         assert len(hit) == 1
         assert hit[0].postings[0].units.number == Decimal("-86.00")
-        assert hit[0].narration == "07.03.2024"
+        assert hit[0].narration == "Day Pass for the Half Fare Travelcard, 07.03.2024"
 
     def test_non_halbtax_row_uses_bank(self, _transactions):
         # Row on 15.03.2024: test_paymen_method -> bank account

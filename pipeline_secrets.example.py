@@ -17,37 +17,40 @@ from drnukebean.importer.zkb_ebics import ZKBCredentials
 # ---------------------------------------------------------------------------
 
 # Root directory where the pipeline deposits downloaded statement files.
-DOWNLOADS = Path('/path/to/DownloadsDir')
+# Finpension CSV exports should be placed in a "finpension/" subdirectory,
+# with filenames matching the pattern finpension_(S[23][a]?)_(Portfolio\d)*.csv,
+# e.g. finpension_S3a_Portfolio1_2025.csv.
+DOWNLOADS = Path("/path/to/DownloadsDir")
 
 # Root of the beancount ledger. Output .bean files are written here.
-LEDGER_DIR = Path('/path/to/ledger.bean')
+LEDGER_DIR = Path("/path/to/ledger.bean")
 
 # Archive root for source files after a successful full run.
 # Must NOT be a subdirectory of DOWNLOADS (archived files would be re-identified).
-STATEMENT_DEST = Path('/path/to/statements/archive')
+STATEMENT_DEST = Path("/path/to/statements/archive")
 
 # ---------------------------------------------------------------------------
 # ZKB credentials (EBICS H005)
 # ---------------------------------------------------------------------------
 
-ZKB_IBAN = 'CHxx xxxx xxxx xxxx xxxx x'   # spaces optional
+ZKB_IBAN = "CHxx xxxx xxxx xxxx xxxx x"  # spaces optional
 
 ZKB_CREDENTIALS = ZKBCredentials(
-    keys_file='/path/to/zkb_keyring.file',   # fintech EBICS keyring file
-    passphrase='...',                         # keyring encryption passphrase
-    host_id='...',                            # HostID from bank letter
-    url='https://...',                        # EBICS server URL from bank letter
-    partner_id='...',                         # PartnerID / ContractID at ZKB
-    user_id='...',                            # UserID
+    keys_file="/path/to/zkb_keyring.file",  # fintech EBICS keyring file
+    passphrase="...",  # keyring encryption passphrase
+    host_id="...",  # HostID from bank letter
+    url="https://...",  # EBICS server URL from bank letter
+    partner_id="...",  # PartnerID / ContractID at ZKB
+    user_id="...",  # UserID
 )
 
 # ---------------------------------------------------------------------------
 # IBKR FlexQuery credentials
 # ---------------------------------------------------------------------------
 
-IBKR_TOKEN      = '...'   # Flex Web Service token (from IBKR Account Management)
-IBKR_QUERY_ID   = '...'   # numeric Flex Query ID
-IBKR_QUERY_NAME = '...'   # queryName in the FlexQueryResponse XML; validated on download
+IBKR_TOKEN = "..."  # Flex Web Service token (from IBKR Account Management)
+IBKR_QUERY_ID = "..."  # numeric Flex Query ID
+IBKR_QUERY_NAME = "..."  # queryName in the FlexQueryResponse XML; validated on download
 
 # ---------------------------------------------------------------------------
 # IBKR account IDs
@@ -58,5 +61,5 @@ IBKR_QUERY_NAME = '...'   # queryName in the FlexQueryResponse XML; validated on
 # Every ID present in the FlexQuery response must have a corresponding entry there;
 # a missing ID raises a RuntimeError at import time.
 
-IBKR_ACCOUNT_1 = 'U1234567'
-IBKR_ACCOUNT_2 = 'U7654321'
+IBKR_ACCOUNT_1 = "U1234567"
+IBKR_ACCOUNT_2 = "U7654321"
