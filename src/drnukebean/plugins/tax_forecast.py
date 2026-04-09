@@ -1,278 +1,276 @@
 """
-A beancount plugin to make predictions on tax liabilities in kanton zurich switzerland
+A beancount plugin to predict tax liabilities in Kanton Zurich, Switzerland.
 
-it uses a very messy config string like
+The plugin:
+  1. Sums the current year's taxable income across configured accounts.
+  2. Extrapolates linearly to a full year's income.
+  3. Queries the ZH web tax calculator API for cantonal + federal tax.
+  4. Spreads the result uniformly across the months covered so far.
 
-'{"taxable_accounts": ["Income:Jobs:Taxable:Salary", "Income:Jobs:Taxable:Bonus", "Income:Invest:IB:.*:Div"], "deductable_accounts": [], "taxable_assets_accounts": [], "tax_expenses_main_account": "Expenses:Taxes", "liability_account": "Liabilities:Tax", "year": 2022, "api_year":2022 "assets": 200000, "taxable_income": 100000, "witholding": 500, "municipality": 261, "marial_srtatus": "single", "n_children": 0, "tax_day_of_month": 24, "precision": 2}'
+Config is a Python dict literal passed as the plugin argument. Single quotes
+inside the double-quoted beancount string require no escaping:
 
-that can be generated with json.dumps(<config_dict>)
+    plugin "drnukebean.plugins.tax_forecast" "{'year': 2024, 'api_year': 2024,
+        'taxable_accounts': ['Income:Jobs:Taxable:Salary', 'Income:Invest:IB:.*:Div'],
+        'deductible_accounts': [], 'tax_expenses_main_account': 'Expenses:Taxes',
+        'liability_account': 'Liabilities:Tax', 'municipality': 261,
+        'marital_status': 'single', 'n_children': 0,
+        'tax_day_of_month': 24, 'precision': 2}"
 
-use the plugin in your ledger file like: plugin "drnukebean.plugins.tax_forecast" <config_string>
+API responses are cached in a diskcache store under {ledger_dir}/.cache with a
+TTL that expires at midnight of the current day.
 """
 
+import ast
+import collections
 import datetime
-import hashlib
 import http.client as httplib
 import json
-import os
-import pickle
 import re
-import time
-import traceback
+from pathlib import Path
+from typing import cast
 
-import pandas as pd
+import beanquery
+import diskcache
 from beancount.core import data
 from beancount.core.amount import Amount
 from beancount.core.number import Decimal
-from beancount.query.query import run_query
 from loguru import logger
 
 __plugins__ = ["tax_forecast"]
 
-CACHE_FILENAME = "api_cache.pkl"
-CACHE_RETENTION_SECONDS = 24 * 60 * 60
+TaxForecastError = collections.namedtuple("TaxForecastError", "source message entry")
 
 
 class APIError(Exception):
     pass
 
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
 def tax_forecast(entries, options, config_str):
+    errors = []
+    config = ast.literal_eval(config_str)
+    today = datetime.datetime.today().date()
+    year = config.get("year")
+    api_year = config.get("api_year")
+
+    # resolve cache directory from ledger file location
+    ledger_file = options.get("filename", "")
+    cache_dir = Path(ledger_file).parent / ".cache" if ledger_file else Path(".cache")
+
+    # get accounts (via open directives)
+    accounts = {entry.account for entry in entries if isinstance(entry, data.Open)}
+    taxable_accounts, _deductible_accounts = get_accounts(config, accounts)
+
+    # aggregate positions per currency for the configured year
+    rows = get_income_from_accounts(entries, options, taxable_accounts, year)
+    if not rows:  # no income for that year
+        return entries, errors
+
+    last_month_of_income = max(r[0].month for r in rows)
+
+    # sum positions per currency
+    # row layout: (date, account, position: Position, currency: str)
+    by_currency: dict[str, float] = collections.defaultdict(float)
+    for r in rows:
+        by_currency[r[3]] += float(r[2].units.number)
+
+    # convert to base currency and extrapolate to full year
+    base_currency = options.get("operating_currency")[0]
+    prices = [e for e in entries if isinstance(e, data.Price)]
+    taxable_income_float = abs(
+        _to_base_currency(by_currency, base_currency, prices, today) / last_month_of_income * 12
+    )
+
+    assets = 0
+    withholding = 0
+    municipality = config.get("municipality")
+    marital_status = config.get("marital_status")
+    n_children = config.get("n_children")
+
+    # query tax calculator API
+    url_staat = "/ZH-Web-Calculators/calculators/INCOME_ASSETS/calculate"
+    url_bund = "/ZH-Web-Calculators/calculators/FEDERAL/calculate"
+
+    data_staat = {
+        "isLiabilityLessThanAYear": False,
+        "hasTaxSeparation": False,
+        "hasQualifiedInvestments": False,
+        "taxYear": str(api_year),
+        "liabilityBegin": None,
+        "liabilityEnd": None,
+        "name": "",
+        "maritalStatus": str(marital_status).lower(),
+        "taxScale": "BASIC",
+        "religionP1": "OTHERS",
+        "religionP2": "OTHERS",
+        "municipality": str(municipality),
+        "taxableIncome": str(taxable_income_float),
+        "ascertainedTaxableIncome": None,
+        "qualifiedInvestmentsIncome": None,
+        "taxableAssets": str(assets),
+        "ascertainedTaxableAssets": None,
+        "withholdingTax": str(withholding),
+    }
+
+    data_bund = {
+        "isLiabilityLessThanAYearOrHasTaxSeparation": False,
+        "taxYear": str(api_year),
+        "name": "",
+        "taxScale": str(marital_status).upper(),
+        "childrenNo": str(n_children),
+        "taxableIncome": str(taxable_income_float),
+        "ascertainedTaxableIncome": None,
+    }
+
     try:
-        errors = []
-        config = eval(config_str, {}, {})
-        today = datetime.datetime.today().date()
-        year = config.get("year")
-        api_year = config.get("api_year")
+        response_staat = query_zh_tax_api(url_staat, data_staat, cache_dir)
+        response_bund = query_zh_tax_api(url_bund, data_bund, cache_dir)
+    except APIError:
+        logger.info("could not fetch tax info from API. Not providing tax forecast")
+        return entries, errors
 
-        # get accounts (via open directives)
-        accounts = {entry.account for entry in entries if isinstance(entry, data.Open)}
+    # extract relevant info and convert to per-month amounts
+    precision = config.get("precision")
+    taxes = {
+        "Staats": response_staat["cantonalBaseTax"]["value"],
+        "Gemeinde": response_staat["municipalityTax"]["value"],
+        "Personal": response_staat["personalTax"]["value"],
+        "Vermoegen": response_staat["assetsTax"]["value"],
+        "Bundes": response_bund["totalFederalTax"]["value"],
+    }
+    taxes_per_month = {
+        kind: (Decimal(str(value)) / 12).quantize(Decimal(10) ** -precision)
+        for kind, value in taxes.items()
+    }
 
-        taxable_accounts, deductable_accounts, asset_accounts, taxcredit_accounts = get_accounts(
-            config, accounts
-        )
+    # create transactions
+    tax_transactions = make_transactions(config, options, taxes_per_month, last_month_of_income)
+    entries.extend(tax_transactions)
 
-        # from accounts, aggregate positions
-        taxable_incomes = get_income_expenses_from_accounts(
-            entries, options, config, taxable_accounts
-        )
-        if not len(taxable_incomes):  # no income for that year
-            return entries, errors
-        last_month_of_income = taxable_incomes.date.max().month
-        taxable_incomes_by_currency = (
-            taxable_incomes.groupby("currency").agg({"position": "sum"}).reset_index()
-        )
-
-        # add fx info
-        taxable_incomes_by_currency = add_fx_info(
-            entries, options, taxable_incomes_by_currency, today
-        )
-
-        # aggregate and scale to 12 months
-        taxable_income = taxable_incomes_by_currency.in_base_curr.sum() / last_month_of_income * 12
-
-        assets = 0
-        taxable_income_float = abs(float(taxable_income))
-        witholding = 0
-        municipality = config.get("municipality")
-        marial_srtatus = config.get("marial_srtatus")
-        n_children = config.get("n_children")
-
-        # query tax calculator api
-        url_staat = "/ZH-Web-Calculators/calculators/INCOME_ASSETS/calculate"
-        url_bund = "/ZH-Web-Calculators/calculators/FEDERAL/calculate"
-
-        data_staat = {
-            "isLiabilityLessThanAYear": False,
-            "hasTaxSeparation": False,
-            "hasQualifiedInvestments": False,
-            "taxYear": str(api_year),
-            "liabilityBegin": None,
-            "liabilityEnd": None,
-            "name": "",
-            "maritalStatus": str(marial_srtatus).lower(),
-            "taxScale": "BASIC",
-            "religionP1": "OTHERS",
-            "religionP2": "OTHERS",
-            "municipality": str(municipality),
-            "taxableIncome": str(taxable_income_float),
-            "ascertainedTaxableIncome": None,
-            "qualifiedInvestmentsIncome": None,
-            "taxableAssets": str(assets),
-            "ascertainedTaxableAssets": None,
-            "withholdingTax": str(witholding),
-        }
-
-        data_bund = {
-            "isLiabilityLessThanAYearOrHasTaxSeparation": False,
-            "taxYear": str(api_year),
-            "name": "",
-            "taxScale": str(marial_srtatus).upper(),
-            "childrenNo": str(n_children),
-            "taxableIncome": str(taxable_income_float),
-            "ascertainedTaxableIncome": None,
-        }
-        try:
-            response_staat = query_zh_tax_api(url_staat, data_staat)
-            response_bund = query_zh_tax_api(url_bund, data_bund)
-        except APIError:
-            logger.info("could not fetch tax info from API. Not providing tax forecast")
-            return entries, errors
-        # extract relevant info and convert to monthly taxes
-        taxes = {
-            "Staats": response_staat.get("cantonalBaseTax").get("value"),
-            "Gemeinde": response_staat.get("municipalityTax").get("value"),
-            "Personal": response_staat.get("personalTax").get("value"),
-            "Vermoegen": response_staat.get("assetsTax").get("value"),
-            "Bundes": response_bund.get("totalFederalTax").get("value"),
-        }
-
-        precision = config.get("precision")
-        taxes_per_month = {
-            kind: Decimal(value / 12).__round__(precision) for kind, value in taxes.items()
-        }
-
-        # create postings & transactions
-        tax_transactions = make_transactions(config, options, taxes_per_month, last_month_of_income)
-
-        entries.extend(tax_transactions)
-    except Exception as e:
-        logger.info(f"exception raised in tax_forecast plugin: {traceback.format_exc()}")
-        errors.append(f"{traceback.format_exc()}\n{e}")
     return entries, errors
 
 
-def load_cache():
-    if os.path.exists(CACHE_FILENAME):
-        with open(CACHE_FILENAME, "rb") as f:
-            cache = pickle.load(f)
-        retention = time.time() - CACHE_RETENTION_SECONDS
-        cache = {k: v for k, v in cache.items() if v["timestamp"] > retention}
-        return cache
-    return {}
-
-
-def is_cache_entry_valid(entry_timestamp):
-    current_timestamp = time.time()
-    return (current_timestamp - entry_timestamp) < CACHE_RETENTION_SECONDS
-
-
-def get_payload_hash(payload):
-    return hashlib.md5(str(payload).encode()).hexdigest()
-
-
-def save_cache(cache):
-    with open(CACHE_FILENAME, "wb") as f:
-        pickle.dump(cache, f)
-
-
-def query_zh_tax_api(url, data):
-    cache = load_cache()
-    payload_hash = get_payload_hash(data)
-
-    # Check if the response for this payload is already cached and valid
-    if payload_hash in cache:
-        if is_cache_entry_valid(cache[payload_hash]["timestamp"]):
-            logger.info("Returning cached tax api response")
-            return cache[payload_hash]["data"]
-
-    logger.info("payload not in cache, querying tax api")
-
-    host = "webcalc.services.zh.ch"
-    headers = {"Content-Type": "application/json"}
-    conn = httplib.HTTPSConnection(host)
-    conn.request("POST", url, json.dumps(data), headers)
-    response = conn.getresponse()
-
-    if response.status == 200:
-        logger.info("tax api query successful")
-
-        answer = json.loads(response.read())
-        cache[payload_hash] = {
-            "data": answer,
-            "timestamp": time.time(),  # Record the current time as the timestamp of the cache entry
-        }
-        save_cache(cache)
-        return answer
-    else:
-        logger.info("tax api was called but did not return 200")
-        raise APIError("Tax API did not return 200 but {response.status} ")
+# ---------------------------------------------------------------------------
+# Account helpers
+# ---------------------------------------------------------------------------
 
 
 def get_accounts(config, accounts):
-    # Make a regex that matches if any of our regexes match for taxable accounts.
-    if config["taxable_accounts"]:
-        combined = "(" + ")|(".join(config["taxable_accounts"]) + ")"
-        taxable_accounts = [
-            acc for acc in accounts if bool(re.search(combined, acc, re.IGNORECASE))
-        ]
-    else:
-        taxable_accounts = []
+    """Return (taxable_accounts, deductible_accounts) matched against open accounts."""
 
-    if config["deductable_accounts"]:
-        combined = "(" + ")|(".join(config["deductable_accounts"]) + ")"
-        deductable_accounts = [
-            acc for acc in accounts if bool(re.search(combined, acc, re.IGNORECASE))
-        ]
-    else:
-        deductable_accounts = []
+    def _match(patterns):
+        if not patterns:
+            return []
+        combined = "(" + ")|(".join(patterns) + ")"
+        return [acc for acc in accounts if re.search(combined, acc, re.IGNORECASE)]
 
-    asset_accounts = []  # Todo
-    taxcredit_accounts = []  # todo
-
-    return taxable_accounts, deductable_accounts, asset_accounts, taxcredit_accounts
+    taxable_accounts = _match(config.get("taxable_accounts", []))
+    deductible_accounts = _match(config.get("deductible_accounts", []))
+    return taxable_accounts, deductible_accounts
 
 
-def get_income_expenses_from_accounts(entries, options, config, taxable_accounts):
-    # monthly aggregated data for all income and expense accounts
-    year = config.get("year")
-    dfs = []
+# ---------------------------------------------------------------------------
+# Income aggregation
+# ---------------------------------------------------------------------------
+
+
+def get_income_from_accounts(entries, options, taxable_accounts, year):
+    """Return a flat list of row namedtuples (date, account, position, currency)."""
+    if not taxable_accounts:
+        return []
+
+    conn = beanquery.connect("beancount:", entries=entries, errors=[], options=options)
+    rows = []
     for acc in taxable_accounts:
-        query = (
-            f'SELECT date, account, position, currency\nWHERE account = "{acc}"\nAND Year = {year}'
+        cursor = conn.execute(
+            f'SELECT date, account, position, currency WHERE account = "{acc}" AND year = {year}'
         )
-        result = run_query(entries, options, query, numberify=True)
-
-        cols = [x[0] for x in result[0]]
-        df = pd.DataFrame(result[1], columns=cols)
-        df.columns = ["position" if "position" in col else col for col in df.columns]
-        dfs.append(df)
-
-    return pd.concat(dfs).fillna(0)
+        rows.extend(cursor.fetchall())
+    return rows
 
 
-def add_fx_info(entries, options, taxable_incomes_by_currency, today):
-    # get forex rates
-    fx_rates = []
-    base_currency = options.get("operating_currency")[0]
-    for currency in taxable_incomes_by_currency.currency:
+# ---------------------------------------------------------------------------
+# FX conversion
+# ---------------------------------------------------------------------------
+
+
+def _to_base_currency(by_currency, base_currency, prices, today):
+    """Convert a {currency: float} dict to a single base-currency float."""
+    total = 0.0
+    for currency, amount in by_currency.items():
         if currency == base_currency:
-            fx_rates.append(1)
+            total += amount
         else:
-            prices = [e for e in entries if isinstance(e, data.Price)]
             prices_curr = [p for p in prices if p.currency == currency]
-            best_date = min([p.date for p in prices_curr], key=lambda x: abs(x - today))
-            price = [p for p in prices_curr if p.date == best_date][0].amount.number
-            fx_rates.append(price)
+            if not prices_curr:
+                logger.warning(f"No price entries found for currency {currency}, skipping")
+                continue
+            best = min(prices_curr, key=lambda p: abs(p.date - today))
+            total += amount * float(best.amount.number)
+    return total
 
-    # update the dataframe
-    taxable_incomes_by_currency["fx_rate"] = fx_rates
-    taxable_incomes_by_currency["in_base_curr"] = (
-        taxable_incomes_by_currency.position * taxable_incomes_by_currency.fx_rate
-    )
 
-    return taxable_incomes_by_currency
+# ---------------------------------------------------------------------------
+# API cache helpers
+# ---------------------------------------------------------------------------
+
+
+def _seconds_until_midnight() -> float:
+    """Return seconds remaining until the next calendar-day boundary."""
+    now = datetime.datetime.now()
+    midnight = (now + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return (midnight - now).total_seconds()
+
+
+def _cache_key(payload: dict) -> str:
+    return str(sorted(payload.items()))
+
+
+def query_zh_tax_api(url: str, payload: dict, cache_dir: Path) -> dict:
+    key = _cache_key(payload)
+    with diskcache.Cache(cache_dir) as cache:
+        if key in cache:
+            logger.info("tax API: returning cached response")
+            return cast(dict, cache[key])
+
+    logger.info("tax API: cache miss, querying API")
+    host = "webcalc.services.zh.ch"
+    headers = {"Content-Type": "application/json"}
+    conn = httplib.HTTPSConnection(host)
+    conn.request("POST", url, json.dumps(payload), headers)
+    response = conn.getresponse()
+
+    if response.status != 200:
+        logger.info(f"tax API returned {response.status}")
+        raise APIError(f"Tax API did not return 200 but {response.status}")
+
+    logger.info("tax API: query successful")
+    answer = json.loads(response.read())
+    ttl = _seconds_until_midnight()
+    with diskcache.Cache(cache_dir) as cache:
+        cache.set(key, answer, expire=ttl)
+    return answer
+
+
+# ---------------------------------------------------------------------------
+# Transaction builder
+# ---------------------------------------------------------------------------
 
 
 def make_transactions(config, options, taxes_per_month, last_month_of_income):
     year = config.get("year")
     base_currency = options.get("operating_currency")[0]
-    tax_transactions = []
     day = config.get("tax_day_of_month")
     tax_base_account = config.get("tax_expenses_main_account")
+
     postings = [
         data.Posting(
-            ":".join([tax_base_account, tax_type]),
+            f"{tax_base_account}:{tax_type}",
             Amount(value, base_currency),
             None,
             None,
@@ -281,11 +279,10 @@ def make_transactions(config, options, taxes_per_month, last_month_of_income):
         )
         for tax_type, value in taxes_per_month.items()
     ]
-
     postings.append(
         data.Posting(
             config.get("liability_account"),
-            Amount(-sum([v for v in taxes_per_month.values()]), base_currency),
+            Amount(-sum(taxes_per_month.values(), Decimal(0)), base_currency),
             None,
             None,
             None,
@@ -293,6 +290,7 @@ def make_transactions(config, options, taxes_per_month, last_month_of_income):
         )
     )
 
+    tax_transactions = []
     for month in range(1, last_month_of_income + 1):
         month_name = datetime.date(1900, month, 1).strftime("%b")
         trans = data.Transaction(
@@ -303,7 +301,7 @@ def make_transactions(config, options, taxes_per_month, last_month_of_income):
             f"Tax forecast {month_name} {year}",
             data.EMPTY_SET,
             data.EMPTY_SET,
-            postings,
+            list(postings),
         )
         tax_transactions.append(trans)
     return tax_transactions

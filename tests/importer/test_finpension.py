@@ -132,8 +132,7 @@ def _liquidation_row(
 ) -> str:
     # No shares, no price — as exported by Finpension
     return (
-        f"{date};Liquidation distribution;{asset};{isin};;"
-        f"CHF;1.0000000000;;{cashflow};{balance}\n"
+        f"{date};Liquidation distribution;{asset};{isin};;CHF;1.0000000000;;{cashflow};{balance}\n"
     )
 
 
@@ -524,11 +523,7 @@ class TestExtractDeposit:
     def test_single_cash_posting(self, tmp_path):
         content = _HEADER + _deposit_row(cashflow="500.000000")
         path = _write(tmp_path, content)
-        txn = next(
-            e
-            for e in _importer().extract(path, [])
-            if isinstance(e, data.Transaction)
-        )
+        txn = next(e for e in _importer().extract(path, []) if isinstance(e, data.Transaction))
         assert len(txn.postings) == 1
         assert txn.postings[0].account == _CASH
         assert txn.postings[0].units.number == Decimal("500.000000")
@@ -568,9 +563,7 @@ class TestExtractDeposit:
 class TestExtractLiquidationDistribution:
     @pytest.fixture
     def txn(self, tmp_path) -> data.Transaction:
-        content = _HEADER + _liquidation_row(
-            isin="testisin4", asset="fundD", cashflow="70.000000"
-        )
+        content = _HEADER + _liquidation_row(isin="testisin4", asset="fundD", cashflow="70.000000")
         path = _write(tmp_path, content)
         entries = _importer().extract(path, [])
         return next(e for e in entries if isinstance(e, data.Transaction))
@@ -616,11 +609,7 @@ class TestExtractYearFilter:
         assert txns[0].date == datetime.date(2025, 1, 15)
 
     def test_no_year_filter_extracts_all(self, tmp_path):
-        content = (
-            _HEADER
-            + _buy_row(date="2023-06-01")
-            + _buy_row(date="2025-01-01")
-        )
+        content = _HEADER + _buy_row(date="2023-06-01") + _buy_row(date="2025-01-01")
         path = _write(tmp_path, content)
         txns = [
             e for e in _importer(year=None).extract(path, []) if isinstance(e, data.Transaction)
@@ -818,9 +807,7 @@ class TestIntegration:
 
     def test_liquidation_distribution_flagged(self, _transactions):
         # One liquidation distribution in the fixture (2025-01-29, testisin4)
-        liq = [
-            t for t in _transactions if "Liquidation distribution" in (t.narration or "")
-        ]
+        liq = [t for t in _transactions if "Liquidation distribution" in (t.narration or "")]
         assert len(liq) == 1
         assert liq[0].flag == "!"
         assert len(liq[0].postings) == 1
@@ -856,7 +843,8 @@ class TestIntegration:
         hit = [
             t
             for t in _transactions
-            if t.date == datetime.date(2021, 11, 30) and "FUNDA" in (t.narration or "")
+            if t.date == datetime.date(2021, 11, 30)
+            and "FUNDA" in (t.narration or "")
             and "BUY" in (t.narration or "")
         ]
         assert len(hit) == 1

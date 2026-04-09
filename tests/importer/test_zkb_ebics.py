@@ -11,9 +11,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, call
 
 import pytest
+from fintech.ebics import EbicsFunctionalError  # type: ignore[import-untyped]
 
 import drnukebean.importer.zkb_ebics as ebics_module  # calls fintech.register()
-from fintech.ebics import EbicsFunctionalError  # type: ignore[import-untyped]
 from drnukebean.importer.zkb_ebics import (
     ZKBCredentials,
     _fetch_statements,

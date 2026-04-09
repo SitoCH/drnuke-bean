@@ -52,7 +52,6 @@ from drnukebean.importer.zkb_camt import ZKBCamtImporter
 from drnukebean.importer.zkb_ebics import make_zkb_setup
 from drnukebean.pipeline.runner import run_all
 
-
 ZKB_ACCOUNT = "Assets:Bank:ZKB:CHF"
 
 # ---------------------------------------------------------------------------
@@ -70,17 +69,17 @@ pipelines = [
             isin_lookup={
                 "CH0012345678": "FUNDA",
                 "CH0098765432": "FUNDB",
-                # add one entry per fund held across all finpension portfolios. 
+                # add one entry per fund held across all finpension portfolios.
                 # must match beancount commodity tickers
             },
-            div_suffix="Div",               # dividends subaccount 
-            interest_suffix="Interest",     # interest subaccount suffix
-            fees_suffix="Fees",             # fees subaccount suffix
-            year=datetime.now().year-1,     # None imports full .csv export
-            ignore_funds_transfers=False,   # True to silently drop Deposit rows
+            div_suffix="Div",  # dividends subaccount
+            interest_suffix="Interest",  # interest subaccount suffix
+            fees_suffix="Fees",  # fees subaccount suffix
+            year=datetime.now().year - 1,  # None imports full .csv export
+            ignore_funds_transfers=False,  # True to silently drop Deposit rows
             # the regex pattern extracts the pillar (2; 3a) and the portfolio number
             # must return both as groups in that order e.g for finpension_S3a_Portfolio1.csv
-            regex=r"finpension_(S[23][a]?)_(Portfolio\d)",  
+            regex=r"finpension_(S[23][a]?)_(Portfolio\d)",
         ),
         "source_dir": cfg.DOWNLOADS / "finpension",
         "bean_output_file": cfg.LEDGER_DIR / "FinPension.bean",

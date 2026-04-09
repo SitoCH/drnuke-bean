@@ -133,9 +133,7 @@ class FinPensionImporter(beangulp.Importer):
 
     def identify(self, filepath: str) -> bool:
         result = bool(re.search(self.regex, filepath, re.IGNORECASE))
-        logger.info(
-            f"identify assertion for finpension importer and file '{filepath}': {result}"
-        )
+        logger.info(f"identify assertion for finpension importer and file '{filepath}': {result}")
         return result
 
     def account(self, filepath: str) -> str:
@@ -194,9 +192,7 @@ class FinPensionImporter(beangulp.Importer):
         return ":".join([self.main_account, currency])
 
     def getDivIncomeAcconut(self, currency: str, symbol: str) -> str:
-        return ":".join(
-            [self.main_account.replace("Assets", "Income"), symbol, self.div_suffix]
-        )
+        return ":".join([self.main_account.replace("Assets", "Income"), symbol, self.div_suffix])
 
     def getInterestIncomeAcconut(self, currency: str) -> str:
         return ":".join(
@@ -243,8 +239,7 @@ class FinPensionImporter(beangulp.Importer):
         symbol = self.isin_lookup.get(isin)
         if symbol is None:
             logger.error(
-                f"Could not fetch isin {isin} from supplied ISINs "
-                f"{list(self.isin_lookup.keys())}"
+                f"Could not fetch isin {isin} from supplied ISINs {list(self.isin_lookup.keys())}"
             )
             return None
 
@@ -261,18 +256,14 @@ class FinPensionImporter(beangulp.Importer):
             )
             postings = [
                 data.Posting(self.getAssetAccount(symbol), quantity, None, price, None, None),
-                data.Posting(
-                    self.getLiquidityAccount(currency), proceeds, None, None, None, None
-                ),
+                data.Posting(self.getLiquidityAccount(currency), proceeds, None, None, None, None),
             ]
             flag = self.flag
         else:
             # Liquidation distribution: shares not reported in CSV
             narration = f"Liquidation distribution {symbol}; {asset_name}"
             postings = [
-                data.Posting(
-                    self.getLiquidityAccount(currency), proceeds, None, None, None, None
-                ),
+                data.Posting(self.getLiquidityAccount(currency), proceeds, None, None, None, None),
             ]
             flag = "!"
 
@@ -330,9 +321,7 @@ class FinPensionImporter(beangulp.Importer):
         currency = row[_COL_CURRENCY].strip()
         amount_ = amount.Amount(D(row[_COL_CASHFLOW]), currency)
         postings = [
-            data.Posting(
-                self.getInterestIncomeAcconut(currency), -amount_, None, None, None, None
-            ),
+            data.Posting(self.getInterestIncomeAcconut(currency), -amount_, None, None, None, None),
             data.Posting(self.getLiquidityAccount(currency), amount_, None, None, None, None),
         ]
         meta = data.new_metadata("Interest", 0)
@@ -353,8 +342,7 @@ class FinPensionImporter(beangulp.Importer):
         symbol = self.isin_lookup.get(isin)
         if symbol is None:
             logger.error(
-                f"Could not fetch isin {isin} from supplied ISINs "
-                f"{list(self.isin_lookup.keys())}"
+                f"Could not fetch isin {isin} from supplied ISINs {list(self.isin_lookup.keys())}"
             )
             return None
         amount_div = amount.Amount(D(row[_COL_CASHFLOW]), currency)

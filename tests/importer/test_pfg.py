@@ -544,8 +544,7 @@ class TestIntegration:
         hits = [
             t
             for t in transactions
-            if t.date == datetime.date(2023, 10, 31)
-            and "BANKPAKET" in t.narration
+            if t.date == datetime.date(2023, 10, 31) and "BANKPAKET" in t.narration
         ]
         assert len(hits) == 1
         assert hits[0].postings[0].units.number == Decimal("-63.94")
