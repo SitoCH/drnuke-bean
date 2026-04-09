@@ -1,0 +1,150 @@
+; =============================================================================
+; ledger_example.bean
+; Minimal working ledger demonstrating the amortize plugin.
+;
+; Plugin invocation:
+;   plugin "drnukebean.plugins.amortize" "{'buffer_acc_base': 'Assets:Prepaid:'}"
+;
+; Two modes:
+;   "spread" (default) -- cash flow on original date, P&L deferred via buffer accounts
+;   "split"            -- original replaced by N equal sub-transactions, no buffer
+;
+; To load:  bean-check ledger.bean.example
+; To query: bean-query ledger.bean.example "<query>"
+; =============================================================================
+
+plugin "drnukebean.plugins.amortize" "{'buffer_acc_base': 'Assets:Prepaid:'}"
+plugin "drnukebean.plugins.tax_forecast" "{'taxable_accounts': ['Income:Jobs:Taxable:Salary1', 'Income:Jobs:Taxable:Salary1', 'Income:Invest:Dividends'], 'deductible_accounts': [], 'tax_expenses_main_account': 'Expenses:Taxes', 'liability_account': 'Liabilities:Tax', 'year': 2024, 'api_year': 2024, 'municipality': 261, 'marital_status': 'single', 'n_children': 0, 'tax_day_of_month': 24}"
+
+option "operating_currency" "CHF"
+
+
+; =============================================================================
+; SPREAD MODE (default): cash flow stays on payment date, P&L deferred
+; =============================================================================
+; The plugin:
+;   - keeps the asset/liability leg on the original transaction date
+;   - replaces each income/expense leg with a buffer account posting
+;   - emits N child transactions that drain the buffer pro-rata
+;
+; Buffer accounts are opened automatically under the configured base:
+;   Assets:Prepaid:Amortize:<sans-root of income/expense account>
+
+
+; -----------------------------------------------------------------------------
+; Example 1 (simple spread): annual bill, recognised monthly
+; -----------------------------------------------------------------------------
+; 120 CHF paid on 2026-02-01, recognised as 10 CHF/month over 12 months.
+
+
+2025-01-01 open Assets:Bank:CHF                 CHF
+2025-01-01 open Expenses:Software                   CHF
+
+2026-02-01 * "Toolbox Inc" "Annual software licence"
+  p_amortize_start: "2026-01-01"
+  p_amortize_frequency: "M"
+  p_amortize_times: "12"
+  Assets:Bank:CHF   -120.00 CHF
+  Expenses:Software      120.00 CHF
+
+
+; -----------------------------------------------------------------------------
+; Example 2 (simple spread): quarterly magazine, 4 quarterly instalments
+; -----------------------------------------------------------------------------
+
+2025-01-01 open Expenses:Literature                   CHF
+
+2027-01-01 * "ReadMore AG" "Quarterly magazine Q1-Q4 2026"
+  p_amortize_start: "2027-01-15"
+  p_amortize_frequency: "Q"
+  p_amortize_times: "4"
+  Assets:Bank:CHF   -80.00 CHF
+  Expenses:Literature      80.00 CHF
+
+; -----------------------------------------------------------------------------
+; Example 3 (multi-leg spread): home+car insurance bundle, two expense legs
+; -----------------------------------------------------------------------------
+; Insurer sends one bill; recognition split across two accounts.
+; Two buffer accounts are created automatically:
+;   Assets:Prepaid:Amortize:Insurance:Home
+;   Assets:Prepaid:Amortize:Insurance:Car
+
+2025-01-01 open Expenses:Insurance:Home             CHF
+2025-01-01 open Expenses:Insurance:Car  CHF
+
+2028-12-01 * "Zurich Insurance" "Annual home + car insurance 2027"
+  p_amortize_start: "2028-01-01"
+  p_amortize_frequency: "M"
+  p_amortize_times: "12"
+  Assets:Bank:CHF        -120.00 CHF
+  Expenses:Insurance:Home      80.00 CHF
+  Expenses:Insurance:Car       40.00 CHF
+
+
+; -----------------------------------------------------------------------------
+; Example 4 (rounding, spread): amount that does not divide evenly
+; -----------------------------------------------------------------------------
+; 100 CHF / 3 months = 33.33 + 33.33 + 33.34 (last period absorbs remainder)
+
+
+2029-03-01 * "Awkward Amount GmbH" "3-month subscription"
+  p_amortize_start: "2029-03-01"
+  p_amortize_frequency: "M"
+  p_amortize_times: "3"
+  Assets:Bank:CHF   -100.00 CHF
+  Expenses:Software      100.00 CHF
+
+
+; =============================================================================
+; SPLIT MODE: original replaced by N equal sub-transactions, no buffer account
+; =============================================================================
+; The plugin replaces the template transaction with N children.
+; All posting amounts are divided by N; the last child absorbs rounding.
+
+
+; -----------------------------------------------------------------------------
+; Example 5 (simple split): monthly income tax liability accrual
+; -----------------------------------------------------------------------------
+; 12 equal monthly accruals throughout 2026.
+; No cash flow yet -- models the ongoing liability before the bill arrives.
+
+2025-01-01 open Expenses:Tax:Income                 CHF
+2025-01-01 open Liabilities:Tax:Accrued             CHF
+
+2026-01-01 * "Tax authority" "Monthly income tax accrual 2026"
+  p_amortize_mode: "split"
+  p_amortize_start: "2026-01-01"
+  p_amortize_frequency: "M"
+  p_amortize_times: "12"
+  Expenses:Tax:Income       100.00 CHF
+  Liabilities:Tax:Accrued  -100.00 CHF
+
+
+; ; -----------------------------------------------------------------------------
+; ; Example 6 (simple split): weekly rent instalments over 4 weeks
+; ; -----------------------------------------------------------------------------
+
+2025-01-01 open Expenses:Rent                       CHF
+
+2030-01-01 * "Landlord SA" "Rent 4-week split"
+  p_amortize_mode: "split"
+  p_amortize_start: "2030-01-01"
+  p_amortize_frequency: "W"
+  p_amortize_times: "4"
+  Assets:Bank:CHF      -200.00 CHF
+  Expenses:Rent             200.00 CHF
+
+
+; -----------------------------------------------------------------------------
+; Example 7 (rounding, split): odd amount across 7 weeks, two legs
+; -----------------------------------------------------------------------------
+; 1000 CHF / 7 = 142.86 x6 + 142.84 (last period absorbs 0.06 remainder).
+; Each child transaction remains balanced by the per-slot correction.
+
+2031-01-01 * "Tax authority" "7-week accrual, rounding demo"
+  p_amortize_mode: "split"
+  p_amortize_start: "2031-01-01"
+  p_amortize_frequency: "W"
+  p_amortize_times: "7"
+  Expenses:Tax:Income       100.00 CHF
+  Liabilities:Tax:Accrued  -100.00 CHF
