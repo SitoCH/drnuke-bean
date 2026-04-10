@@ -118,22 +118,28 @@ def _strip_pf_cell(s: str) -> str:
     return s.strip("=").strip('"')
 
 
+_TWO_PLACES = Decimal("0.01")
+
+
 def _decimal_or_zero(s: str) -> Decimal:
     """Convert a PF amount string to Decimal without a float intermediate.
 
     Handles:
     - Swiss thousands separator (apostrophe): "1'234.56" -> Decimal("1234.56")
-    - Empty strings -> Decimal("0")
-    - Invalid values -> Decimal("0") with a warning
+    - Empty strings -> Decimal("0.00")
+    - Invalid values -> Decimal("0.00") with a warning
+
+    Always returns a value quantized to 2 decimal places so that beancount
+    renders consistent precision (e.g. "20.00" rather than "20").
     """
     cleaned = s.strip().replace("'", "")
     if not cleaned:
-        return Decimal("0")
+        return Decimal("0").quantize(_TWO_PLACES)
     try:
-        return Decimal(cleaned)
+        return Decimal(cleaned).quantize(_TWO_PLACES)
     except InvalidOperation:
         logger.warning("PFGImporter: could not parse amount {!r}; treating as 0", s)
-        return Decimal("0")
+        return Decimal("0").quantize(_TWO_PLACES)
 
 
 def _parse_date(s: str) -> Date:

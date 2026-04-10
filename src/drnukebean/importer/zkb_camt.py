@@ -32,6 +32,15 @@ from loguru import logger
 
 _NS = "urn:iso:std:iso:20022:tech:xsd:camt.053.001.08"
 _NS_MAP = {"ns": _NS}
+_TWO_PLACES = Decimal("0.01")
+
+
+def _parse_amount(text: str) -> Decimal:
+    """Parse an XML amount string to Decimal, always quantized to 2 decimal places.
+
+    Ensures consistent beancount rendering ("20.00" rather than "20").
+    """
+    return Decimal(text.strip()).quantize(_TWO_PLACES)
 
 
 @functools.lru_cache(maxsize=64)
@@ -170,7 +179,7 @@ class ZKBCamtImporter(beangulp.Importer):
                 bal_date = date.fromisoformat(date_str) + timedelta(days=1)
             except ValueError:
                 continue
-            number = _signed(Decimal(amt_el.text.strip()), _text(bal, "ns:CdtDbtInd"))
+            number = _signed(_parse_amount(amt_el.text), _text(bal, "ns:CdtDbtInd"))
             currency = amt_el.attrib.get("Ccy", self._currency)
             return [
                 data.Balance(
@@ -211,7 +220,7 @@ class ZKBCamtImporter(beangulp.Importer):
         if amt_el is None or not amt_el.text:
             raise ValueError("missing <Amt> in <Ntry>")
         currency = amt_el.attrib.get("Ccy", self._currency)
-        return Decimal(amt_el.text.strip()), currency, _text(ntry, "ns:CdtDbtInd")
+        return _parse_amount(amt_el.text), currency, _text(ntry, "ns:CdtDbtInd")
 
     def _booking_date(self, ntry) -> date:
         date_str = _text(ntry, "ns:BookgDt/ns:Dt")
@@ -224,7 +233,7 @@ class ZKBCamtImporter(beangulp.Importer):
         # Amount: prefer TxDtls level, fall back to Ntry level
         amt_el = txd.find("ns:Amt", _NS_MAP)
         if amt_el is not None and amt_el.text:
-            number = Decimal(amt_el.text.strip())
+            number = _parse_amount(amt_el.text)
             currency = amt_el.attrib.get("Ccy", self._currency)
             cdt_dbt = _text(txd, "ns:CdtDbtInd")
         else:

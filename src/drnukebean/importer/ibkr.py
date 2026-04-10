@@ -690,7 +690,7 @@ class IBKRImporter(beangulp.Importer):
     def _dividend(self, trx, wht_trx, filepath: str, account_root: str) -> data.Transaction:
         symbol = self._map_symbol(trx.symbol)
         currency = trx.currency
-        div_amt = amount.Amount(trx.amount, currency)
+        div_amt = amount.Amount(round(trx.amount, 2), currency)
 
         desc = trx.description or ""
 
@@ -727,7 +727,7 @@ class IBKRImporter(beangulp.Importer):
                     wht_trx.currency,
                 )
             else:
-                wht_amt = amount.Amount(wht_trx.amount, wht_trx.currency)
+                wht_amt = amount.Amount(round(wht_trx.amount, 2), wht_trx.currency)
                 postings.extend(
                     [
                         data.Posting(
@@ -769,7 +769,7 @@ class IBKRImporter(beangulp.Importer):
 
     def _interest(self, trx, filepath: str, account_root: str) -> data.Transaction:
         currency = trx.currency
-        amt = amount.Amount(trx.amount, currency)
+        amt = amount.Amount(round(trx.amount, 2), currency)
         postings = [
             data.Posting(
                 self._interest_account(currency, account_root), minus(amt), None, None, None, None
@@ -791,7 +791,7 @@ class IBKRImporter(beangulp.Importer):
 
     def _interest_wht(self, trx, filepath: str, account_root: str) -> data.Transaction:
         currency = trx.currency
-        amt = amount.Amount(trx.amount, currency)
+        amt = amount.Amount(round(trx.amount, 2), currency)
         postings = [
             data.Posting(
                 self._wht_account_name(currency, account_root), minus(amt), None, None, None, None
@@ -813,7 +813,7 @@ class IBKRImporter(beangulp.Importer):
 
     def _fee(self, trx, filepath: str, account_root: str) -> data.Transaction:
         currency = trx.currency
-        amt = amount.Amount(trx.amount, currency)
+        amt = amount.Amount(round(trx.amount, 2), currency)
         month_match = _RE_FEE_MONTH.search(trx.description or "")
         month = month_match.group(0) if month_match else trx.description or ""
         postings = [
@@ -839,7 +839,7 @@ class IBKRImporter(beangulp.Importer):
         self, trx, filepath: str, account_root: str, deposit_from: str | None
     ) -> data.Transaction:
         currency = trx.currency
-        amt = amount.Amount(trx.amount, currency)
+        amt = amount.Amount(round(trx.amount, 2), currency)
         ibkr_leg = data.Posting(
             self._liquidity_account(currency, account_root), amt, None, None, None, None
         )

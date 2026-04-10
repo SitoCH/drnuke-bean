@@ -364,7 +364,7 @@ def _run_entry(
         entries = wrapped.extract(str(filepath), existing)
         if not entries:
             logger.warning("[{}] identified file yielded 0 entries: {}", name, filepath.name)
-        _append_entries(data.sorted(entries), dest, label=filepath.name)
+        _append_entries(data.sorted(entries), dest, label=f"[{name}] {filepath.name}")
         all_entries.extend(entries)
 
     if not dry_run and matched and dest_root:
