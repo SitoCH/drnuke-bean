@@ -90,9 +90,6 @@ _DATE_RE = re.compile(r"^\d{2}\.\d{2}\.\d{4}$")
 
 _COL_DATE = ("Datum", "Date")
 _COL_TEXT = ("Avisierungstext", "Notification text")
-_COL_CREDIT = ("Gutschrift in CHF", "Credit in CHF")
-_COL_DEBIT = ("Lastschrift in CHF", "Debit in CHF")
-_COL_BALANCE = ("Saldo in CHF", "Balance in CHF")
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +208,10 @@ class PFGImporter(beangulp.Importer):
         self._balance_account = balance_account if balance_account is not None else account
         self._currency = currency
         self._encoding = file_encoding
+        # Column names vary by currency (e.g. "Gutschrift in CHF" vs "Gutschrift in EUR")
+        self._col_credit = (f"Gutschrift in {currency}", f"Credit in {currency}")
+        self._col_debit = (f"Lastschrift in {currency}", f"Debit in {currency}")
+        self._col_balance = (f"Saldo in {currency}", f"Balance in {currency}")
 
     # ------------------------------------------------------------------
     # beangulp interface
@@ -339,8 +340,8 @@ class PFGImporter(beangulp.Importer):
         self, filepath: str, row: dict, lineno: int, tx_date: Date
     ) -> data.Transaction:
         """Convert a single CSV row dict into a beancount Transaction."""
-        credit = _decimal_or_zero(_col(row, *_COL_CREDIT))
-        debit = _decimal_or_zero(_col(row, *_COL_DEBIT))
+        credit = _decimal_or_zero(_col(row, *self._col_credit))
+        debit = _decimal_or_zero(_col(row, *self._col_debit))
         total = credit + debit  # debit is already negative in the PF export
         amount = Amount(total, self._currency)
         narration = remove_spaces(_col(row, *_COL_TEXT))
@@ -361,7 +362,7 @@ class PFGImporter(beangulp.Importer):
         self, filepath: str, row: dict, lineno: int, tx_date: Date
     ) -> data.Balance | None:
         """Return a Balance directive if this row carries a non-empty balance value."""
-        raw = _col(row, *_COL_BALANCE).strip()
+        raw = _col(row, *self._col_balance).strip()
         if not raw:
             return None
         balance_amount = Amount(_decimal_or_zero(raw), self._currency)

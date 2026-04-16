@@ -51,6 +51,7 @@ from drnukebean.importer.sbb import SBBImporter
 from drnukebean.importer.zkb_camt import ZKBCamtImporter
 from drnukebean.importer.zkb_ebics import make_zkb_setup
 from drnukebean.pipeline.runner import run_all
+from drnukebean.prices.split import run_split_prices
 
 ZKB_ACCOUNT = "Assets:Bank:ZKB:CHF"
 
@@ -181,6 +182,8 @@ pipelines = [
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import sys
+
     run_all(
         pipelines,
         ledger=cfg.LEDGER_DIR / "main.bean",
@@ -188,3 +191,9 @@ if __name__ == "__main__":
         dry_run_file=cfg.LEDGER_DIR / "testoutput.bean",
         predict_lookback_days=730,  # days of ledger history for smart_importer; None = full
     )
+
+    if "--dry-run" not in sys.argv:
+        run_split_prices(
+            ledger=cfg.LEDGER_DIR / "main.bean",
+            out_dir=cfg.LEDGER_DIR / "prices",
+        )

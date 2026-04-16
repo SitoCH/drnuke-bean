@@ -476,6 +476,82 @@ class TestEnglishColumnNames:
 
 
 # ===========================================================================
+# EUR account — dynamic column names
+# ===========================================================================
+
+_IBAN_EUR = "CH9999999999999999EUR"
+_ACCOUNT_EUR = "Assets:Bank:PFG:EUR"
+
+
+def _pfg_csv_eur(
+    *,
+    iban: str = _IBAN_EUR,
+    date_from: str = "01.10.2023",
+    date_to: str = "31.10.2023",
+    rows: str = "",
+) -> str:
+    """Minimal structurally valid PF CSV with EUR column headers."""
+    return (
+        f'Datum von:;="{date_from}"\n'
+        f'Datum bis:;="{date_to}"\n'
+        'Kategorie:;="Alle"\n'
+        f'Konto:;="{iban}"\n'
+        'Währung:;="EUR"\n'
+        "\n"
+        "Datum;Avisierungstext;Gutschrift in EUR;Lastschrift in EUR;"
+        "Label;Kategorie;Valuta;Saldo in EUR\n"
+        "\n"
+        f"{rows}"
+    )
+
+
+def _importer_eur() -> PFGImporter:
+    return PFGImporter(iban=_IBAN_EUR, account=_ACCOUNT_EUR, currency="EUR")
+
+
+class TestEURAccount:
+    """EUR account: column headers contain 'EUR', not 'CHF'."""
+
+    def test_identify_eur_file(self, tmp_path):
+        path = _write(tmp_path, _pfg_csv_eur())
+        assert _importer_eur().identify(path) is True
+
+    def test_chf_importer_rejects_eur_file(self, tmp_path):
+        # currency mismatch: CHF importer must not accept an EUR file
+        path = _write(tmp_path, _pfg_csv_eur(iban=_IBAN))
+        assert _importer().extract(path, []) == []
+
+    def test_eur_debit_amount(self, tmp_path):
+        rows = _row(debit="-42.00")
+        path = _write(tmp_path, _pfg_csv_eur(rows=rows))
+        txns = [e for e in _importer_eur().extract(path, []) if isinstance(e, data.Transaction)]
+        assert len(txns) == 1
+        assert _units(txns[0]).number == Decimal("-42.00")
+        assert _units(txns[0]).currency == "EUR"
+
+    def test_eur_credit_amount(self, tmp_path):
+        rows = _row(credit="150.00")
+        path = _write(tmp_path, _pfg_csv_eur(rows=rows))
+        txns = [e for e in _importer_eur().extract(path, []) if isinstance(e, data.Transaction)]
+        assert _units(txns[0]).number == Decimal("150.00")
+
+    def test_eur_balance(self, tmp_path):
+        rows = _row(balance="3'000.00")
+        path = _write(tmp_path, _pfg_csv_eur(rows=rows))
+        bals = [e for e in _importer_eur().extract(path, []) if isinstance(e, data.Balance)]
+        assert len(bals) == 1
+        assert bals[0].amount.number == Decimal("3000.00")
+        assert bals[0].amount.currency == "EUR"
+
+    def test_chf_importer_does_not_pick_up_eur_columns(self, tmp_path):
+        # A CHF importer pointed at an EUR-column file with matching IBAN but wrong
+        # currency header must return empty (currency mismatch guard fires first).
+        path = _write(tmp_path, _pfg_csv_eur(iban=_IBAN))
+        imp_chf = PFGImporter(iban=_IBAN, account=_ACCOUNT, currency="CHF")
+        assert imp_chf.extract(path, []) == []
+
+
+# ===========================================================================
 # Integration tests — full fixture
 # ===========================================================================
 

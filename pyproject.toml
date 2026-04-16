@@ -8,6 +8,9 @@ version = "0.1.0"
 description = "Dr Nuke's beancount arsenal"
 requires-python = ">=3.12"
 
+[project.scripts]
+split-prices = "drnukebean.prices.split:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
