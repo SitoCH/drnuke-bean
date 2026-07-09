@@ -14,6 +14,7 @@ Sensitive values (paths, credentials) live in pipeline_secrets.py.
 See pipeline_secrets.example.py for the expected structure.
 """
 
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -197,3 +198,13 @@ if __name__ == "__main__":
             ledger=cfg.LEDGER_DIR / "main.bean",
             out_dir=cfg.LEDGER_DIR / "prices",
         )
+
+    # Post-checks: format the ledger and report open flags.
+    # bean-check is skipped here because freshly imported transactions are
+    # incomplete (flagged '!') and balance assertions may not yet hold.
+    # Run run_post_checks.py manually (without --no-bean-check) once the
+    # ledger has been manually reviewed and closed.
+    _post = [sys.executable, str(Path(__file__).with_name("run_post_checks.py")), "--no-bean-check"]
+    if "--dry-run" in sys.argv:
+        _post.append("--dry-run")
+    subprocess.run(_post, check=False)

@@ -9,13 +9,13 @@
 ;   - 12 unrealized entries (2020-01-31 through 2020-12-31) recording the
 ;     cumulative P&L delta each month.
 ;   - 1 clear entry (2021-01-31) reversing the December equity offset into
-;     Income:Invest:IBKR:HOOL:PnL to net against the realized gain on sell.
+;     Income:Invest:Broker:HOOL:PnL to net against the realized gain on sell.
 ;
 ; Can be loaded directly:
 ;   bean-check hool_buy_sell.bean
 ;   fava hool_buy_sell.bean
 
-plugin "drnukebean.plugins.unrealized_gains" "Unrealized"
+plugin "drnukebean.plugins.unrealized_gains" "PnL"
 
 option "operating_currency" "CHF"
 
@@ -26,9 +26,9 @@ option "operating_currency" "CHF"
 ; ---------------------------------------------------------------------------
 
 2020-01-01 open Assets:Bank:CHF                 CHF
-2020-01-01 open Assets:Invest:IBKR:HOOL         HOOL
+2020-01-01 open Assets:Invest:Broker:HOOL         HOOL
 2020-01-01 open Equity:Opening                  CHF
-2020-01-01 open Income:Invest:IBKR:HOOL:PnL     CHF
+2020-01-01 open Income:Invest:Broker:HOOL:PnL     CHF
 
 ; ---------------------------------------------------------------------------
 ; Opening balance
@@ -43,7 +43,7 @@ option "operating_currency" "CHF"
 ; ---------------------------------------------------------------------------
 
 2020-01-01 * "Buy HOOL"
-  Assets:Invest:IBKR:HOOL   1 HOOL {100.00 CHF}
+  Assets:Invest:Broker:HOOL   1 HOOL {100.00 CHF}
   Assets:Bank:CHF          -100.00 CHF
 
 ; ---------------------------------------------------------------------------
@@ -64,9 +64,9 @@ option "operating_currency" "CHF"
 2020-12-01 price HOOL  166.00 CHF
 
 2020-12-15 * "Sell HOOL"
-  Assets:Invest:IBKR:HOOL           -1 HOOL {100.00 CHF} @ 166.00 CHF
+  Assets:Invest:Broker:HOOL           -1 HOOL {100.00 CHF} @ 166.00 CHF
   Assets:Bank:CHF                  166.00 CHF
-  Income:Invest:IBKR:HOOL:PnL      -66.00 CHF
+  Income:Invest:Broker:HOOL:PnL      -66.00 CHF
 
 ; 2021-01-01 price HOOL  178.00 CHF
 ; 2021-02-01 price HOOL  191.00 CHF
@@ -86,9 +86,9 @@ option "operating_currency" "CHF"
 ; ; ---------------------------------------------------------------------------
 
 ; 2021-12-01 * "Sell HOOL"
-;   Assets:Invest:IBKR:HOOL           -1 HOOL {100.00 CHF} @ 376.00 CHF
+;   Assets:Invest:Broker:HOOL           -1 HOOL {100.00 CHF} @ 376.00 CHF
 ;   Assets:Bank:CHF                  376 CHF
-;   Income:Invest:IBKR:HOOL:PnL      -276.00 CHF
+;   Income:Invest:Broker:HOOL:PnL      -276.00 CHF
 
 
 2022-12-01 price HOOL  376.00 CHF

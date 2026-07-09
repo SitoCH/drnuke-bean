@@ -164,6 +164,47 @@ def test_sell_clears_in_same_month():
     assert feb_entry.postings[1].account == "Income:Capital:Gains"
 
 
+def test_transfer_reverses_without_error():
+    """Position transferred to another account: silent symmetric reversal, no error."""
+    ledger = """\
+option "operating_currency" "USD"
+
+2020-01-01 open Assets:Cash USD
+2020-01-01 open Assets:Invest:VT VT
+2020-01-01 open Assets:Broker2:VT VT
+
+2020-01-15 * "Buy VT in first broker"
+  Assets:Invest:VT  10 VT {100.00 USD}
+  Assets:Cash      -1000.00 USD
+
+2020-01-31 price VT 110.00 USD
+
+2020-02-15 * "Transfer VT to second broker"
+  Assets:Broker2:VT   10 VT {100.00 USD}
+  Assets:Invest:VT   -10 VT {100.00 USD}
+
+2020-02-29 price VT 120.00 USD
+"""
+    entries, options_map = _load(ledger)
+    entries, errors = add_unrealized_gains(entries, options_map, "Unrealized")
+
+    assert not errors
+
+    unrealized = get_unrealized_entries(entries)
+    # Jan entry for Invest:VT, Feb reversal for Invest:VT, Feb entry for Broker2:VT.
+    assert len(unrealized) == 3
+
+    narrations = [e.narration for e in unrealized]
+    assert any("transferred" in n for n in narrations)
+
+    # The reversal entry must be a symmetric negation (equity and income both reversed).
+    reversal = next(e for e in unrealized if "transferred" in e.narration)
+    assert len(reversal.postings) == 2
+    eq_p, inc_p = reversal.postings
+    assert eq_p.units.number == -unrealized[0].postings[0].units.number
+    assert inc_p.units.number == -unrealized[0].postings[1].units.number
+
+
 def test_clear_error_no_income_account():
     """Error when the sell transaction has no income posting to net against."""
     ledger = """\

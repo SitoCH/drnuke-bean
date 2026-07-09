@@ -7,19 +7,31 @@ delta unrealized P&L.  The offset goes to an Equity account so that the
 balance-sheet NAV is unaffected.  The previous month's entry is reversed inside
 the same transaction so only the period delta flows through income.
 
-Example accounts (subaccount="Unrealized"):
+Config string: "equity_subaccount[,income_subaccount]"
+  - Single value: used for both equity and income (classic mode).
+  - Two comma-separated values: equity subaccount and income subaccount are set
+    independently (FVTPL mode — monthly deltas land in the same account as
+    realized gains, eliminating the sell-date income spike).
+
+Classic mode (subaccount="Unrealized"):
   Equity: Equity:Invest:IBKR:VT:Unrealized   <- balance offset, no NAV impact
   Income: Income:Invest:IBKR:VT:Unrealized   <- period income/loss
 
+FVTPL mode (config="Unrealized,PnL"):
+  Equity: Equity:Invest:IBKR:VT:Unrealized   <- balance offset, no NAV impact
+  Income: Income:Invest:IBKR:VT:PnL          <- same account as realized gains
+
 When a position is fully closed during a month, the clear entry is dated to the
 last day of that same month (not the next month), so realized and unrealized
-effects land in the same accounting period.
+effects land in the same accounting period.  The clear always posts to the income
+account discovered in the sell transaction, netting realized and reversed-unrealized
+in one place.
 
 Plugin invocation:
   plugin "drnukebean.plugins.unrealized_gains" "Unrealized"
+  plugin "drnukebean.plugins.unrealized_gains" "Unrealized,PnL"
 
-The optional config string is the subaccount appended to both equity and income
-accounts.  Default: "Unrealized".  Pass "" to book directly into the root accounts.
+Default: "Unrealized".  Pass "" to book directly into the root accounts.
 """
 
 __author__ = "drnuke"
@@ -167,7 +179,8 @@ def _add_unrealized_gains_at_date(
     price_map: dict,
     date: datetime.date,
     meta: dict,
-    subaccount: str,
+    equity_subaccount: str,
+    income_subaccount: str,
 ) -> tuple[list, set, list]:
     errors: list = []
     entries_truncated = summarize.truncate(entries, date + _ONEDAY)
@@ -209,9 +222,10 @@ def _add_unrealized_gains_at_date(
         # Equity offset (no NAV impact) mirrors the asset account under Equity root.
         equity_account = account.join(equity_account_type, account.sans_root(acc_name))
         income_account = account.join(income_account_type, account.sans_root(acc_name))
-        if subaccount:
-            equity_account = account.join(equity_account, subaccount)
-            income_account = account.join(income_account, subaccount)
+        if equity_subaccount:
+            equity_account = account.join(equity_account, equity_subaccount)
+        if income_subaccount:
+            income_account = account.join(income_account, income_subaccount)
 
         holdings_with_currencies.add((acc_name, cost_currency, currency))
 
@@ -266,12 +280,16 @@ def _make_clear_entries(
     period_end: datetime.date,
     subaccount: str,
     meta: dict,
+    current_holdings: set,
 ) -> tuple[list, list]:
     """Build clear entries for positions that closed during the period.
 
-    The income side of each clear posts to the realized gains account discovered
-    in the sell transaction, so that realized and reversed-unrealized amounts net
-    in a single account.
+    For sales, the income side posts to the realized gains account discovered in
+    the sell transaction so that realized and reversed-unrealized amounts net in
+    one place.
+
+    For transfers (currency still held somewhere else this month), both sides are
+    reversed directly so no net income or equity effect remains.
     """
     clear_entries: list = []
     errors: list = []
@@ -281,6 +299,30 @@ def _make_clear_entries(
             equity_account = account.join(equity_account, subaccount)
         latest = _find_previous_unrealized(new_entries, equity_account, cost_currency, currency)
         if not latest:
+            continue
+
+        clear_meta = data.new_metadata(meta["filename"], 999)
+        clear_meta["prev_currency"] = currency
+        eq_p, inc_p = latest.postings[0], latest.postings[1]
+
+        # A position that disappeared from one account but still exists in another
+        # account this month is a transfer, not a sale.  Reverse both sides
+        # symmetrically so neither income nor equity is affected.
+        is_transfer = any(c == currency for (_, _, c) in current_holdings)
+        if is_transfer:
+            txn = data.Transaction(
+                clear_meta,
+                period_end,
+                FLAG_UNREALIZED,
+                None,
+                f"Reverse unrealized gains/losses of {currency} — position transferred",
+                set(),
+                set(),
+                [],
+            )
+            txn.postings.append(data.Posting(eq_p.account, -eq_p.units, None, None, None, None))
+            txn.postings.append(data.Posting(inc_p.account, -inc_p.units, None, None, None, None))
+            clear_entries.append(txn)
             continue
 
         realized_income_account, err = _find_sell_income_account(
@@ -296,8 +338,6 @@ def _make_clear_entries(
             errors.append(err)
             continue
 
-        clear_meta = data.new_metadata(meta["filename"], 999)
-        clear_meta["prev_currency"] = currency
         txn = data.Transaction(
             clear_meta,
             period_end,
@@ -309,7 +349,6 @@ def _make_clear_entries(
             [],
         )
         # Equity side: negate the prior equity posting (clears balance-sheet offset).
-        eq_p, inc_p = latest.postings[0], latest.postings[1]
         txn.postings.append(data.Posting(eq_p.account, -eq_p.units, None, None, None, None))
         # Income side: post to realized gains account so it nets against the sell.
         txn.postings.append(
@@ -321,15 +360,20 @@ def _make_clear_entries(
 
 
 def add_unrealized_gains(
-    entries: list, options_map: dict, subaccount: str = "Unrealized"
+    entries: list, options_map: dict, config: str = "Unrealized"
 ) -> tuple[list, list]:
     errors: list = []
     meta = data.new_metadata("<unrealized_gains>", 0)
     account_types = options.get_account_types(options_map)
 
-    if subaccount and not account.is_valid(account.join(account_types.assets, subaccount)):
-        errors.append(UnrealizedError(meta, f"Invalid subaccount name: {subaccount!r}", None))
-        return entries, errors
+    parts = [p.strip() for p in config.split(",", 1)] if config else ["", ""]
+    equity_subaccount = parts[0]
+    income_subaccount = parts[1] if len(parts) > 1 else parts[0]
+
+    for label, sub in (("equity", equity_subaccount), ("income", income_subaccount)):
+        if sub and not account.is_valid(account.join(account_types.assets, sub)):
+            errors.append(UnrealizedError(meta, f"Invalid {label} subaccount name: {sub!r}", None))
+            return entries, errors
 
     if not entries:
         return entries, errors
@@ -353,7 +397,8 @@ def add_unrealized_gains(
             price_map,
             date,
             meta,
-            subaccount,
+            equity_subaccount,
+            income_subaccount,
         )
         new_entries.extend(date_entries)
         errors.extend(date_errors)
@@ -369,8 +414,9 @@ def add_unrealized_gains(
                 account_types.income,
                 period_start,
                 date,
-                subaccount,
+                equity_subaccount,
                 meta,
+                holdings_with_currencies,
             )
             new_entries.extend(clear_entries)
             errors.extend(clear_errors)
