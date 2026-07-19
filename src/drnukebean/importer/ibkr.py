@@ -14,7 +14,10 @@ filenames or IBKR account numbers.
 Transaction types handled
 -------------------------
 Trades
-  * Stock buy / sell (with closed-lot cost specs for sells)
+  * Stock buy / sell (with closed-lot cost specs for sells; when
+    *transactionID_labeled_since* is set, lots acquired on or after that date
+    get a CostSpec label equal to the IBKR ``transactionID`` for exact lot
+    matching)
   * Forex buy / sell
 
 CashTransactions
@@ -33,7 +36,8 @@ FlexQuery sections required
 CashReport        : Currency, EndingCash, ToDate
 Trades            : Symbol, Currency, Quantity, TradePrice, Proceeds,
                     IBCommission, IBCommissionCurrency, NetCash,
-                    DateTime, TradeDate, OpenDateTime, BuySell, LevelOfDetail
+                    DateTime, TradeDate, OpenDateTime, TransactionID,
+                    BuySell, LevelOfDetail
 CashTransactions  : Symbol, Currency, Amount, Type, Description,
                     ReportDate, DateTime
 
@@ -51,6 +55,8 @@ Usage in run_imports.py::
                 account='Assets:Invest:IBKR',
                 query_name=cfg.IBKR_QUERY_NAME,
                 currency='CHF',
+                # date of the first import run with lot labeling; never change
+                transactionID_labeled_since='2026-08-01',
                 account_map={
                     'U88776655': {
                         'root': 'Assets:Invest:IBKR:Trading',
@@ -95,6 +101,7 @@ import functools
 import re
 import xml.etree.ElementTree as ET
 from datetime import date, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import beangulp
@@ -215,8 +222,28 @@ class IBKRImporter(beangulp.Importer):
                             account.
         pnl_suffix:         Sub-account suffix for realised P&L
                             (default ``PnL``).
-        suppress_lot_price: If ``True``, closed-lot cost specs use price 0
-                            (hides original purchase price in the output).
+        transactionID_labeled_since:
+                            Acquisition-date threshold for exact lot matching.
+                            Lots acquired on or after this date (BUY:
+                            ``tradeDate``; SELL closed lot:
+                            ``openDateTime.date()``) get a CostSpec label equal
+                            to the IBKR ``transactionID``, so a sell reduces
+                            exactly the lot IBKR reports as closed (same-day
+                            multi-lot sells are otherwise ambiguous).  Labeled
+                            BUY postings carry no basis number; beancount
+                            interpolates it from the cash legs.  Lots acquired
+                            before the threshold keep the previous shape
+                            (priced BUY cost spec, date-only sell cost spec)
+                            and carry the transactionID as posting metadata
+                            instead, for a later scripted ledger migration.
+                            Accepts a ``datetime.date`` or an ISO
+                            ``YYYY-MM-DD`` string.  Set it once -- to the date
+                            of the first import run with this importer
+                            version -- and never change it afterwards: moving
+                            it backwards labels reductions of unlabeled
+                            historical lots, moving it forwards un-labels
+                            reductions of already-labeled lots.  ``None``
+                            (default) disables labeling and logs a warning.
         symbol_map:         Dict remapping IBKR symbols to beancount commodity
                             names, e.g. ``{'VWRL': 'VWRL3'}``.  Applied after
                             auto-cleanup.
@@ -235,7 +262,7 @@ class IBKRImporter(beangulp.Importer):
         fees_suffix: str = "Fees",
         fees_account: str | None = None,
         pnl_suffix: str = "PnL",
-        suppress_lot_price: bool = False,
+        transactionID_labeled_since: date | str | None = None,
         symbol_map: dict[str, str] | None = None,
     ) -> None:
         if account_map is not None:
@@ -258,7 +285,16 @@ class IBKRImporter(beangulp.Importer):
         self._fees_suffix = fees_suffix
         self._fees_account = fees_account
         self._pnl_suffix = pnl_suffix
-        self._suppress_lot_price = suppress_lot_price
+        if isinstance(transactionID_labeled_since, str):
+            transactionID_labeled_since = date.fromisoformat(transactionID_labeled_since)
+        self._labeled_since: date | None = transactionID_labeled_since
+        if self._labeled_since is None:
+            logger.warning(
+                "IBKRImporter: transactionID_labeled_since is not set -- lot labels are "
+                "disabled and same-day multi-lot sells may silently match the wrong lot. "
+                "Set transactionID_labeled_since in the importer config to enable exact "
+                "lot matching."
+            )
         self._symbol_map: dict[str, str] = symbol_map or {}
 
     # ------------------------------------------------------------------
@@ -431,6 +467,64 @@ class IBKRImporter(beangulp.Importer):
                 )
         return entries
 
+    def _buy_cost_spec(self, trx) -> tuple[position.CostSpec, dict | None]:
+        """CostSpec + posting meta for an augmenting BUY posting."""
+        return self._cost_spec_and_meta(
+            transaction_id=trx.transactionID,
+            acq_date=trx.tradeDate,
+            currency=trx.currency,
+            # unlabeled BUYs keep the asserted raw-price basis
+            unlabeled_number_per=trx.tradePrice,
+            context=f"BUY {trx.symbol} {trx.tradeDate}",
+        )
+
+    def _sell_cost_spec(self, lot) -> tuple[position.CostSpec, dict | None]:
+        """CostSpec + posting meta for a reducing SELL (closed-lot) posting."""
+        return self._cost_spec_and_meta(
+            transaction_id=lot.transactionID,
+            acq_date=lot.openDateTime.date(),
+            currency=lot.currency,
+            # the reducing side never asserts a number
+            unlabeled_number_per=None,
+            context=f"CLOSED_LOT {lot.symbol} open {lot.openDateTime}",
+        )
+
+    def _cost_spec_and_meta(
+        self,
+        transaction_id: str | None,
+        acq_date: date,
+        currency: str,
+        unlabeled_number_per: Decimal | None,
+        context: str,
+    ) -> tuple[position.CostSpec, dict | None]:
+        """Build the CostSpec and optional posting metadata for a lot posting.
+
+        Post-threshold lots with a transactionID are labeled: the CostSpec
+        carries ``label=transactionID`` and no number, so booking matches the
+        exact lot.  Everything else keeps the unlabeled shape and, when a
+        transactionID exists, records it as posting metadata for a later
+        ledger migration.
+        """
+        post_threshold = self._labeled_since is not None and acq_date >= self._labeled_since
+        labeled = post_threshold and transaction_id is not None
+        if post_threshold and transaction_id is None:
+            logger.warning(
+                "IBKRImporter: no transactionID on {} -- falling back to unlabeled cost spec",
+                context,
+            )
+        meta = None
+        if not labeled and transaction_id is not None:
+            meta = {"transactionID": str(transaction_id)}
+        cost = position.CostSpec(
+            number_per=None if labeled else unlabeled_number_per,
+            number_total=None,
+            currency=currency,
+            date=acq_date,
+            label=str(transaction_id) if labeled else None,
+            merge=False,
+        )
+        return cost, meta
+
     def _buy_shares(self, trx, filepath: str, account_root: str) -> data.Transaction:
         symbol = self._map_symbol(trx.symbol)
         currency = trx.currency
@@ -439,17 +533,10 @@ class IBKRImporter(beangulp.Importer):
         proceeds = amount.Amount(round(trx.proceeds, 2), currency)
         commission = amount.Amount(round(trx.ibCommission, 2), trx.ibCommissionCurrency)
 
-        cost = position.CostSpec(
-            number_per=price.number,
-            number_total=None,
-            currency=currency,
-            date=trx.tradeDate,
-            label=None,
-            merge=False,
-        )
+        cost, cost_meta = self._buy_cost_spec(trx)
         postings = [
             data.Posting(
-                self._asset_account(symbol, account_root), quantity, cost, None, None, None
+                self._asset_account(symbol, account_root), quantity, cost, None, None, cost_meta
             ),
             data.Posting(
                 self._liquidity_account(currency, account_root), proceeds, None, None, None, None
@@ -499,15 +586,7 @@ class IBKRImporter(beangulp.Importer):
                     "IBKRImporter: lot quantity over-match for sell {} on {}", symbol, trx.dateTime
                 )
                 break
-            cost_price = D("0") if self._suppress_lot_price else D(str(round(lot.tradePrice, 2)))
-            cost = position.CostSpec(
-                number_per=cost_price,
-                number_total=None,
-                currency=lot.currency,
-                date=lot.openDateTime.date(),
-                label=None,
-                merge=False,
-            )
+            cost, cost_meta = self._sell_cost_spec(lot)
             lot_postings.append(
                 data.Posting(
                     self._asset_account(symbol, account_root),
@@ -515,7 +594,7 @@ class IBKRImporter(beangulp.Importer):
                     cost,
                     price,
                     None,
-                    None,
+                    cost_meta,
                 )
             )
             if sum_qty == -trx.quantity:

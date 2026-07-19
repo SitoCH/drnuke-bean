@@ -13,8 +13,11 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from beancount.core import data
+from beancount import loader
+from beancount.core import data, inventory, position
+from beancount.parser import printer
 from ibflex.enums import CashAction
+from loguru import logger
 
 import drnukebean.importer.ibkr as ibkr_module
 from drnukebean.importer.ibkr import IBKRImporter, _forex_currencies, _is_forex, _wht_div_type
@@ -185,14 +188,19 @@ class TestBuyTrade:
         assert "100" in txn.narration
 
     def test_buy_asset_posting_has_cost_spec(self, importer, mocker, tmp_path):
+        # importer fixture has no transactionID_labeled_since: unlabeled BUYs
+        # keep the asserted raw-price basis
         response = make_response(trades=(make_buy_trade(symbol="VT", currency="USD"),))
         entries = _extract(importer, response, mocker, tmp_path)
         txn = next(e for e in entries if isinstance(e, data.Transaction))
         asset_postings = [p for p in txn.postings if p.account == f"{ACCOUNT}:VT"]
         assert len(asset_postings) == 1
-        assert asset_postings[0].cost is not None
-        assert asset_postings[0].cost.currency == "USD"
-        assert asset_postings[0].cost.date == TRADE_DATE
+        cost = asset_postings[0].cost
+        assert isinstance(cost, position.CostSpec)
+        assert cost.number_per == Decimal("100.00")
+        assert cost.currency == "USD"
+        assert cost.date == TRADE_DATE
+        assert cost.label is None
 
     def test_buy_four_postings(self, importer, mocker, tmp_path):
         # asset, liquidity (proceeds), liquidity (commission), fees
@@ -256,21 +264,11 @@ class TestSellTrade:
             if p.account == f"{ACCOUNT}:VT" and p.units is not None and p.units.number < 0
         ]
         assert len(lot_postings) == 1
-        assert lot_postings[0].cost.date == datetime.date(2023, 6, 1)
-
-    def test_suppress_lot_price_zeroes_cost(self, mocker, tmp_path):
-        imp = IBKRImporter(account=ACCOUNT, query_name=QUERY_NAME, suppress_lot_price=True)
-        sell = make_sell_trade(symbol="VT", quantity="-5")
-        lot = make_closed_lot(symbol="VT", quantity="5", trade_price="100.00")
-        response = make_response(trades=(sell, lot))
-        entries = _extract(imp, response, mocker, tmp_path)
-        txn = next(e for e in entries if isinstance(e, data.Transaction))
-        lot_postings = [
-            p
-            for p in txn.postings
-            if p.account == f"{ACCOUNT}:VT" and p.units is not None and p.units.number < 0
-        ]
-        assert lot_postings[0].cost.number_per == Decimal("0")
+        cost = lot_postings[0].cost
+        assert isinstance(cost, position.CostSpec)
+        assert cost.date == datetime.date(2023, 6, 1)
+        # the reducing side never asserts a basis number
+        assert cost.number_per is None
 
     def test_sell_has_pnl_posting(self, importer, mocker, tmp_path):
         sell = make_sell_trade(symbol="VT", quantity="-5")
@@ -280,6 +278,263 @@ class TestSellTrade:
         txn = next(e for e in entries if isinstance(e, data.Transaction))
         pnl_accounts = [p.account for p in txn.postings if "PnL" in p.account]
         assert len(pnl_accounts) == 1
+
+    def test_multi_lot_sell_distinct_labels(self, mocker, tmp_path):
+        imp = IBKRImporter(
+            account=ACCOUNT,
+            query_name=QUERY_NAME,
+            transactionID_labeled_since=datetime.date(2023, 1, 1),
+        )
+        sell = make_sell_trade(symbol="VT", quantity="-10", proceeds="1099.00")
+        lot1 = make_closed_lot(symbol="VT", quantity="5", transaction_id="784510001")
+        lot2 = make_closed_lot(symbol="VT", quantity="5", transaction_id="784510002")
+        response = make_response(trades=(sell, lot1, lot2))
+        entries = _extract(imp, response, mocker, tmp_path)
+        txn = next(e for e in entries if isinstance(e, data.Transaction))
+        lot_postings = [
+            p
+            for p in txn.postings
+            if p.account == f"{ACCOUNT}:VT"
+            and p.units is not None
+            and p.units.number is not None
+            and p.units.number < 0
+        ]
+        assert len(lot_postings) == 2
+        labels = set()
+        for p in lot_postings:
+            assert isinstance(p.cost, position.CostSpec)
+            labels.add(p.cost.label)
+        assert labels == {"784510001", "784510002"}
+
+    def test_labeled_output_books_correct_lot(self, mocker, tmp_path):
+        """cost_spec.bean NVDA scenario: two same-day lots, the labeled SELL
+        must book the intended lot under FIFO, not the FIFO-tiebreak one."""
+        imp = IBKRImporter(
+            account=ACCOUNT,
+            query_name=QUERY_NAME,
+            account_map={"U1234567": {"root": ACCOUNT}},
+            transactionID_labeled_since=datetime.date(2028, 1, 1),
+        )
+        buy1 = make_buy_trade(
+            symbol="NVDA",
+            quantity="10",
+            trade_price="100.00",
+            proceeds="-1000.00",
+            commission="-5.00",
+            trade_date=datetime.date(2028, 6, 15),
+            date_time=datetime.datetime(2028, 6, 15, 9, 30),
+            transaction_id="784510001",
+        )
+        buy2 = make_buy_trade(
+            symbol="NVDA",
+            quantity="10",
+            trade_price="110.00",
+            proceeds="-1100.00",
+            commission="-5.00",
+            trade_date=datetime.date(2028, 6, 15),
+            date_time=datetime.datetime(2028, 6, 15, 14, 15),
+            transaction_id="784510002",
+        )
+        sell = make_sell_trade(
+            symbol="NVDA",
+            quantity="-10",
+            trade_price="200.00",
+            proceeds="2000.00",
+            commission="-5.00",
+            trade_date=datetime.date(2028, 7, 15),
+            date_time=datetime.datetime(2028, 7, 15, 10, 0),
+        )
+        # IBKR reports lot 2 (the 110.00 one) as closed
+        lot = make_closed_lot(
+            symbol="NVDA",
+            quantity="10",
+            trade_price="110.00",
+            open_date_time=datetime.datetime(2028, 6, 15, 14, 15),
+            transaction_id="784510002",
+        )
+        response = make_response(trades=(buy1, buy2, sell, lot))
+        entries = _extract(imp, response, mocker, tmp_path)
+        assert len(entries) == 3
+
+        opens = "\n".join(
+            [
+                f'2028-01-01 open {ACCOUNT}:NVDA NVDA "FIFO"',
+                f"2028-01-01 open {ACCOUNT}:USD",
+                "2028-01-01 open Income:Invest:IBKR:NVDA:PnL",
+                "2028-01-01 open Expenses:Invest:IBKR:Fees:USD",
+            ]
+        )
+        text = opens + "\n\n" + "\n".join(printer.format_entry(e) for e in entries)
+        loaded, errors, _ = loader.load_string(text)
+        assert errors == [], "Load errors:\n" + "\n".join(str(e) for e in errors)
+
+        sell_txn = next(
+            e
+            for e in loaded
+            if isinstance(e, data.Transaction) and e.date == datetime.date(2028, 7, 15)
+        )
+        pnl = next(p for p in sell_txn.postings if "PnL" in p.account)
+        assert pnl.units is not None
+        assert pnl.units.number == Decimal("-900.00")
+
+        # lot 1 (basis 100.00, label 784510001) must remain open and untouched
+        inv = inventory.Inventory()
+        for e in loaded:
+            if isinstance(e, data.Transaction):
+                for p in e.postings:
+                    if p.account == f"{ACCOUNT}:NVDA":
+                        # after booking every posting has units and a resolved Cost
+                        assert p.units is not None
+                        assert not isinstance(p.cost, position.CostSpec)
+                        inv.add_amount(p.units, p.cost)
+        positions = inv.get_positions()
+        assert len(positions) == 1
+        pos = positions[0]
+        assert pos.units.number == Decimal("10")
+        assert pos.units.currency == "NVDA"
+        assert pos.cost is not None
+        assert pos.cost.number == Decimal("100.00")
+        assert pos.cost.label == "784510001"
+
+
+# ===========================================================================
+# CostSpec labeling (transactionID_labeled_since)
+# ===========================================================================
+
+
+class TestLabeledSinceConfig:
+    def test_iso_string_normalized_to_date(self):
+        imp = IBKRImporter(account=ACCOUNT, transactionID_labeled_since="2024-01-01")
+        assert imp._labeled_since == datetime.date(2024, 1, 1)
+
+    def test_date_stored_unchanged(self):
+        threshold = datetime.date(2024, 1, 1)
+        imp = IBKRImporter(account=ACCOUNT, transactionID_labeled_since=threshold)
+        assert imp._labeled_since == threshold
+
+    def test_invalid_string_raises_value_error(self):
+        with pytest.raises(ValueError):
+            IBKRImporter(account=ACCOUNT, transactionID_labeled_since="01.02.2024")
+
+    def test_unset_warns_at_init(self):
+        messages: list[str] = []
+        sink_id = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+        try:
+            IBKRImporter(account=ACCOUNT)
+        finally:
+            logger.remove(sink_id)
+        assert any("transactionID_labeled_since" in m for m in messages)
+
+    def test_set_does_not_warn_at_init(self):
+        messages: list[str] = []
+        sink_id = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+        try:
+            IBKRImporter(account=ACCOUNT, transactionID_labeled_since="2024-01-01")
+        finally:
+            logger.remove(sink_id)
+        assert not any("transactionID_labeled_since" in m for m in messages)
+
+
+class TestCostSpecLabeling:
+    """Behavior matrix: threshold unset / acquisition date >= threshold /
+    acquisition date < threshold, each with and without a transactionID."""
+
+    # BUY acquisition date is TRADE_DATE = 2024-01-15
+    @pytest.mark.parametrize(
+        "labeled_since,transaction_id,exp_label,exp_meta_id,exp_number_per",
+        [
+            (None, "784510001", None, "784510001", Decimal("100.00")),
+            (None, None, None, None, Decimal("100.00")),
+            (datetime.date(2024, 1, 1), "784510001", "784510001", None, None),
+            (datetime.date(2024, 1, 1), None, None, None, Decimal("100.00")),
+            (datetime.date(2024, 2, 1), "784510001", None, "784510001", Decimal("100.00")),
+            (datetime.date(2024, 2, 1), None, None, None, Decimal("100.00")),
+        ],
+    )
+    def test_buy_matrix(
+        self,
+        mocker,
+        tmp_path,
+        labeled_since,
+        transaction_id,
+        exp_label,
+        exp_meta_id,
+        exp_number_per,
+    ):
+        imp = IBKRImporter(
+            account=ACCOUNT, query_name=QUERY_NAME, transactionID_labeled_since=labeled_since
+        )
+        response = make_response(trades=(make_buy_trade(transaction_id=transaction_id),))
+        entries = _extract(imp, response, mocker, tmp_path)
+        txn = next(e for e in entries if isinstance(e, data.Transaction))
+        posting = next(p for p in txn.postings if p.account == f"{ACCOUNT}:VT")
+        cost = posting.cost
+        assert isinstance(cost, position.CostSpec)
+        assert cost.label == exp_label
+        assert cost.number_per == exp_number_per
+        assert cost.currency == "USD"
+        assert cost.date == TRADE_DATE
+        assert (posting.meta or {}).get("transactionID") == exp_meta_id
+
+    # SELL lot acquisition date is OPEN_DT.date() = 2023-06-01
+    @pytest.mark.parametrize(
+        "labeled_since,transaction_id,exp_label,exp_meta_id",
+        [
+            (None, "784510001", None, "784510001"),
+            (None, None, None, None),
+            (datetime.date(2023, 1, 1), "784510001", "784510001", None),
+            (datetime.date(2023, 1, 1), None, None, None),
+            (datetime.date(2024, 1, 1), "784510001", None, "784510001"),
+            (datetime.date(2024, 1, 1), None, None, None),
+        ],
+    )
+    def test_sell_matrix(
+        self, mocker, tmp_path, labeled_since, transaction_id, exp_label, exp_meta_id
+    ):
+        imp = IBKRImporter(
+            account=ACCOUNT, query_name=QUERY_NAME, transactionID_labeled_since=labeled_since
+        )
+        sell = make_sell_trade(symbol="VT", quantity="-5")
+        lot = make_closed_lot(symbol="VT", quantity="5", transaction_id=transaction_id)
+        response = make_response(trades=(sell, lot))
+        entries = _extract(imp, response, mocker, tmp_path)
+        txn = next(e for e in entries if isinstance(e, data.Transaction))
+        posting = next(
+            p
+            for p in txn.postings
+            if p.account == f"{ACCOUNT}:VT"
+            and p.units is not None
+            and p.units.number is not None
+            and p.units.number < 0
+        )
+        cost = posting.cost
+        assert isinstance(cost, position.CostSpec)
+        assert cost.label == exp_label
+        # the reducing side never asserts a basis number
+        assert cost.number_per is None
+        assert cost.date == datetime.date(2023, 6, 1)
+        assert (posting.meta or {}).get("transactionID") == exp_meta_id
+
+    def test_post_threshold_missing_transaction_id_warns(self, mocker, tmp_path):
+        imp = IBKRImporter(
+            account=ACCOUNT,
+            query_name=QUERY_NAME,
+            transactionID_labeled_since=datetime.date(2024, 1, 1),
+        )
+        messages: list[str] = []
+        sink_id = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+        try:
+            response = make_response(trades=(make_buy_trade(transaction_id=None),))
+            entries = _extract(imp, response, mocker, tmp_path)
+        finally:
+            logger.remove(sink_id)
+        txn = next(e for e in entries if isinstance(e, data.Transaction))
+        posting = next(p for p in txn.postings if p.account == f"{ACCOUNT}:VT")
+        cost = posting.cost
+        assert isinstance(cost, position.CostSpec)
+        assert cost.label is None
+        assert cost.number_per == Decimal("100.00")
+        assert any("no transactionID" in m for m in messages)
 
 
 # ===========================================================================

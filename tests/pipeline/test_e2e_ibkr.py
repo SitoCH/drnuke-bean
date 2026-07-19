@@ -142,6 +142,69 @@ class TestFullRun:
 
 
 # ===========================================================================
+# Labeled run (transactionID_labeled_since set)
+# ===========================================================================
+
+
+class TestLabeledRun:
+    """Threshold 2024-01-20 splits the fixture into labeled (BUYs on
+    2024-01-22 / 2024-01-29) and unlabeled (earlier BUYs, all closed lots
+    opened in 2023) postings."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_download(self, mocker):
+        mocker.patch.object(fq_module.client, "download", return_value=FIXTURE.read_bytes())
+
+    @pytest.fixture(autouse=True)
+    def _clean_argv(self, monkeypatch):
+        monkeypatch.setattr(sys, "argv", ["run_imports.py"])
+
+    def _make_labeled_pipeline(self, source_dir: Path, bean_output_file: Path) -> list[dict]:
+        setup = make_ibkr_setup(
+            token=_TOKEN,
+            query_id=_QUERY_ID,
+            query_name=_QUERY_NAME,
+            dest_dir=source_dir,
+        )
+        importer = IBKRImporter(
+            account=_ACCOUNT,
+            query_name=_QUERY_NAME,
+            currency="EUR",
+            transactionID_labeled_since=datetime.date(2024, 1, 20),
+        )
+        return [
+            dict(
+                name="ibkr",
+                importer=importer,
+                source_dir=source_dir,
+                bean_output_file=bean_output_file,
+                setup=setup,
+            )
+        ]
+
+    def test_labeled_and_unlabeled_cost_specs_in_output(self, tmp_path):
+        src = tmp_path / "ibkr"
+        src.mkdir()
+        out = tmp_path / "ibkr.bean"
+
+        _run(self._make_labeled_pipeline(src, out))
+
+        text = out.read_text()
+        # post-threshold BUYs are labeled: date + transactionID, no price
+        assert '{2024-01-22, "784510207"}' in text
+        assert '{2024-01-29, "784510208"}' in text
+        # pre-threshold BUY keeps the priced cost spec plus the metadata breadcrumb
+        assert "{118.43 EUR, 2024-01-15}" in text
+        assert 'transactionID: "784510201"' in text
+        # closed lots opened pre-threshold stay date-only with the breadcrumb
+        assert "{2023-11-12}" in text
+        assert 'transactionID: "784510310"' in text
+
+        _, errors, _ = bc_parser.parse_string(text)
+        assert errors == [], "Beancount syntax errors:\n" + "\n".join(str(e) for e in errors)
+
+
+# ===========================================================================
 # Dry run
 # ===========================================================================
 

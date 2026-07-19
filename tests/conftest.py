@@ -107,6 +107,7 @@ def make_buy_trade(
     commission_currency: str = "USD",
     trade_date: datetime.date = TRADE_DATE,
     date_time: datetime.datetime = TRADE_DT,
+    transaction_id: str | None = "784510001",
 ) -> Types.Trade:
     return Types.Trade(
         symbol=symbol,
@@ -118,6 +119,7 @@ def make_buy_trade(
         ibCommissionCurrency=commission_currency,
         tradeDate=trade_date,
         dateTime=date_time,
+        transactionID=transaction_id,
         buySell=BuySell.BUY,
         levelOfDetail="EXECUTION",
     )
@@ -155,6 +157,7 @@ def make_closed_lot(
     quantity: str = "5",  # positive: shares consumed from this lot
     trade_price: str = "100.00",
     open_date_time: datetime.datetime = OPEN_DT,
+    transaction_id: str | None = "784510001",
 ) -> Types.Trade:
     return Types.Trade(
         symbol=symbol,
@@ -162,6 +165,7 @@ def make_closed_lot(
         quantity=Decimal(quantity),
         tradePrice=Decimal(trade_price),
         openDateTime=open_date_time,
+        transactionID=transaction_id,
         buySell=BuySell.BUY,
         levelOfDetail="CLOSED_LOT",
     )

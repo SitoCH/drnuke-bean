@@ -115,11 +115,13 @@ plugin "drnukebean.plugins.tax_forecast" "{'year': 2024, 'api_year': 2024,
 
 ### IBKR importer
 
-Files are identified by XML content (`<FlexQueryResponse>` root element). When `query_name` is configured, the `queryName` attribute is also validated, which prevents mixing up multiple queries. 
+Files are identified by XML content (`<FlexQueryResponse>` root element). When `query_name` is configured, the `queryName` attribute is also validated, which prevents mixing up multiple queries.
 
 The flexquery must be configured in the IBKR portal accordingly.
 
 The `account_map` maps each IBKR account ID to a beancount root account and an optional `deposit_from` account. If `deposit_from` is absent, deposit and withdrawal transactions are flagged `!` for manual annotation. Account IDs not present in `account_map` raise a `RuntimeError` at import time rather than silently dropping data.
+
+Setting `transactionID_labeled_since` enables exact lot matching: lots acquired on or after that date get a CostSpec label equal to IBKR's `transactionID`, so a sell reduces exactly the lot IBKR reports as closed (same-day multi-lot sells are otherwise ambiguous under booking-method tiebreaks). Set it once -- to the date of the first import run with this importer version -- and never change it afterwards. Pre-threshold lots keep the previous priced/date-only cost specs and carry the `transactionID` as posting metadata, usable by a later scripted ledger migration. Leaving the field unset disables labeling and logs a warning on every run. 
 
 The network layer (`ibkr_flexquery.py`) caches raw responses to disk to avoid repeated API calls during development.
 
@@ -127,9 +129,9 @@ Required FlexQuery fields are listed in `ibkr.py`'s module docstring; deviating 
 
 ### PostFinance importer
 
-The CSV format has a 6-row metadata header before the column headers; the importer skips these rows and validates the IBAN from the header against the configured IBAN. 
+The CSV format has a 6-row metadata header before the column headers; the importer skips these rows and validates the IBAN from the header against the configured IBAN.
 
-The `fixes` function receives a dict of transaction fields and may modify any of them — narration, payee, flag, postings, metadata — before the `data.Transaction` is constructed. 
+The `fixes` function receives a dict of transaction fields and may modify any of them — narration, payee, flag, postings, metadata — before the `data.Transaction` is constructed.
 
 ### ZKB importer
 
@@ -139,7 +141,7 @@ Parses CAMT.053.001.08 (ISO 20022, Swiss SPS/2.2 variant). The split between `zk
 
 Finpension always exports the complete transaction history. The `year` parameter restricts extraction to a single calendar year; set to `None` to import everything.
 
-Holdings use a `price` annotation (current market price in CHF) rather than cost-basis lots, consistent with Finpension not tracking lots. 
+Holdings use a `price` annotation (current market price in CHF) rather than cost-basis lots, consistent with Finpension not tracking lots.
 
 The `regex` parameter extracts the pillar (e.g. `S3a`) and portfolio (e.g. `Portfolio1`) from the filename. One importer instance handles all files whose names match the pattern; the matched groups are substituted into `root_account` to produce the per-portfolio account path. The default regex is `r"finpension_(S[23][a]?)_(Portfolio\d)"`.
 

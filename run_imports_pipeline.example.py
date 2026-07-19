@@ -164,6 +164,21 @@ pipelines = [
                 },
             },
             wht_account="Expenses:Invest:IBKR:WHT",
+            # Exact lot matching: lots acquired on/after this date get a
+            # CostSpec label equal to IBKR's transactionID, so a sell reduces
+            # exactly the lot IBKR reports as closed (same-day multi-lot sells
+            # are otherwise ambiguous).
+            # - Set it to the date of the first import run with this importer
+            #   version  moving it in either  direction breaks lot matching 
+            #   across the threshold, if no separate backfilling of transaction id
+            #   cost specs happen by the user
+            # - Leaving it unset logs a warning on every run and keeps the
+            #   silent same-day multi-lot mismatch risk.
+            # - Pre-threshold lots imported keep the old cost-spec shape and get the
+            #   transactionID as posting metadata instead -- input for a later
+            #   scripted ledger migration (adding labels to historical BUYs).
+            #   Labeled and unlabeled lots can coexist indefinitely.
+            transactionID_labeled_since="2026-08-01",
         ),
         "source_dir": cfg.DOWNLOADS / "ibkr",
         "bean_output_file": cfg.LEDGER_DIR / "IBKR.bean",
