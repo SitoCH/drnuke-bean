@@ -15,7 +15,7 @@ See pipeline_secrets.example.py for the expected structure.
 """
 
 import subprocess
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from loguru import logger
@@ -178,7 +178,7 @@ pipelines = [
             #   transactionID as posting metadata instead -- input for a later
             #   scripted ledger migration (adding labels to historical BUYs).
             #   Labeled and unlabeled lots can coexist indefinitely.
-            transactionID_labeled_since="2026-08-01",
+            transactionID_labeled_since=date(2026, 8, 1),
         ),
         "source_dir": cfg.DOWNLOADS / "ibkr",
         "bean_output_file": cfg.LEDGER_DIR / "IBKR.bean",

@@ -403,18 +403,24 @@ class TestSellTrade:
 
 
 class TestLabeledSinceConfig:
-    def test_iso_string_normalized_to_date(self):
-        imp = IBKRImporter(account=ACCOUNT, transactionID_labeled_since="2024-01-01")
-        assert imp._labeled_since == datetime.date(2024, 1, 1)
-
     def test_date_stored_unchanged(self):
         threshold = datetime.date(2024, 1, 1)
         imp = IBKRImporter(account=ACCOUNT, transactionID_labeled_since=threshold)
         assert imp._labeled_since == threshold
 
-    def test_invalid_string_raises_value_error(self):
-        with pytest.raises(ValueError):
-            IBKRImporter(account=ACCOUNT, transactionID_labeled_since="01.02.2024")
+    def test_invalid_string_raises_type_error(self):
+        with pytest.raises(TypeError):
+            IBKRImporter(
+                account=ACCOUNT,
+                transactionID_labeled_since="01.02.2024",  # pyright: ignore[reportArgumentType]
+            )
+
+    def test_datetime_raises_type_error(self):
+        with pytest.raises(TypeError):
+            IBKRImporter(
+                account=ACCOUNT,
+                transactionID_labeled_since=datetime.datetime(2024, 1, 1),
+            )
 
     def test_unset_warns_at_init(self):
         messages: list[str] = []
@@ -429,7 +435,7 @@ class TestLabeledSinceConfig:
         messages: list[str] = []
         sink_id = logger.add(lambda m: messages.append(str(m)), level="WARNING")
         try:
-            IBKRImporter(account=ACCOUNT, transactionID_labeled_since="2024-01-01")
+            IBKRImporter(account=ACCOUNT, transactionID_labeled_since=datetime.date(2024, 1, 1))
         finally:
             logger.remove(sink_id)
         assert not any("transactionID_labeled_since" in m for m in messages)

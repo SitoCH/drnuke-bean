@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<FlexQueryResponse queryName="TestQuery" type="AF">
+  <FlexStatements count="1">
+    <FlexStatement accountId="U1234567" fromDate="20240101" toDate="20240131"
+                   period="LastMonth" whenGenerated="2024-02-01;12:00:00">
+    </FlexStatement>
+  </FlexStatements>
+</FlexQueryResponse>

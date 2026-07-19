@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Anonymised ZKB CAMT.053.001.08 fixture for testing.
+  Account: fictional IBAN CH5604835012345678009
+  Period:  2024-01-01 to 2024-01-31
+  Entries (6 transactions):
+    1. CRDT transfer from Example Payee A  +1000.00 CHF  2024-01-10  (Ustrd narration, ref, debtor IBAN)
+    2. DBIT transfer to   Example Payee B  -500.50  CHF  2024-01-15  (structured narration, QRR ref, creditor IBAN)
+    3. Mobile batch (2x DBIT TxDtls)       -100.00 / -200.00 CHF  2024-01-20
+    4. Visa Debit card (CardTx)            -75.30   CHF  2024-01-22
+    5. Generic entry (no TxDtls/CardTx)   +50.00   CHF  2024-01-25
+-->
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08">
+  <BkToCstmrStmt>
+    <Stmt>
+      <Acct>
+        <Id>
+          <IBAN>CH5604835012345678009</IBAN>
+        </Id>
+      </Acct>
+      <FrToDt>
+        <FrDtTm>2024-01-01T00:00:00</FrDtTm>
+        <ToDtTm>2024-01-31T23:59:59</ToDtTm>
+      </FrToDt>
+
+      <!-- Closing balance: 12345.67 CHF credit, date 2024-01-31 -> directive date 2024-02-01 -->
+      <Bal>
+        <Tp><CdOrPrtry><Cd>CLBD</Cd></CdOrPrtry></Tp>
+        <Amt Ccy="CHF">12345.67</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <Dt><Dt>2024-01-31</Dt></Dt>
+      </Bal>
+
+      <!-- Entry 1: incoming credit transfer from Example Payee A -->
+      <Ntry>
+        <Amt Ccy="CHF">1000.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <BookgDt><Dt>2024-01-10</Dt></BookgDt>
+        <AcctSvcrRef>REF0001</AcctSvcrRef>
+        <NtryDtls>
+          <TxDtls>
+            <Refs><AcctSvcrRef>REF0001</AcctSvcrRef></Refs>
+            <Amt Ccy="CHF">1000.00</Amt>
+            <CdtDbtInd>CRDT</CdtDbtInd>
+            <RltdPties>
+              <Dbtr><Pty><Nm>Example Payee A</Nm></Pty></Dbtr>
+              <DbtrAcct><Id><IBAN>CH5600000000000000000</IBAN></Id></DbtrAcct>
+            </RltdPties>
+            <RmtInf><Ustrd>Salary January</Ustrd></RmtInf>
+          </TxDtls>
+        </NtryDtls>
+      </Ntry>
+
+      <!-- Entry 2: outgoing debit transfer to Example Payee B (structured narration + QRR ref) -->
+      <Ntry>
+        <Amt Ccy="CHF">500.50</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <BookgDt><Dt>2024-01-15</Dt></BookgDt>
+        <AcctSvcrRef>REF0002</AcctSvcrRef>
+        <NtryDtls>
+          <TxDtls>
+            <Refs><AcctSvcrRef>REF0002</AcctSvcrRef></Refs>
+            <Amt Ccy="CHF">500.50</Amt>
+            <CdtDbtInd>DBIT</CdtDbtInd>
+            <RltdPties>
+              <Cdtr><Pty><Nm>Example Payee B</Nm></Pty></Cdtr>
+              <CdtrAcct><Id><IBAN>CH5611111111111111111</IBAN></Id></CdtrAcct>
+            </RltdPties>
+            <RmtInf>
+              <Strd>
+                <CdtrRefInf><Ref>RF18539007547034</Ref></CdtrRefInf>
+                <AddtlRmtInf>Rent payment</AddtlRmtInf>
+              </Strd>
+            </RmtInf>
+          </TxDtls>
+        </NtryDtls>
+      </Ntry>
+
+      <!-- Entry 3: mobile banking batch — two TxDtls under one Ntry -->
+      <Ntry>
+        <Amt Ccy="CHF">300.00</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <BookgDt><Dt>2024-01-20</Dt></BookgDt>
+        <AddtlNtryInf>Mobile batch</AddtlNtryInf>
+        <NtryDtls>
+          <TxDtls>
+            <Amt Ccy="CHF">100.00</Amt>
+            <CdtDbtInd>DBIT</CdtDbtInd>
+            <RltdPties>
+              <Cdtr><Pty><Nm>Example Payee C</Nm></Pty></Cdtr>
+            </RltdPties>
+            <RmtInf><Ustrd>Mobile payment 1</Ustrd></RmtInf>
+          </TxDtls>
+          <TxDtls>
+            <Amt Ccy="CHF">200.00</Amt>
+            <CdtDbtInd>DBIT</CdtDbtInd>
+            <RltdPties>
+              <Cdtr><Pty><Nm>Example Payee D</Nm></Pty></Cdtr>
+            </RltdPties>
+            <RmtInf><Ustrd>Mobile payment 2</Ustrd></RmtInf>
+          </TxDtls>
+        </NtryDtls>
+      </Ntry>
+
+      <!-- Entry 4: Visa Debit card transaction (CardTx path) -->
+      <Ntry>
+        <Amt Ccy="CHF">75.30</Amt>
+        <CdtDbtInd>DBIT</CdtDbtInd>
+        <BookgDt><Dt>2024-01-22</Dt></BookgDt>
+        <AcctSvcrRef>REF0004</AcctSvcrRef>
+        <AddtlNtryInf>Groceries</AddtlNtryInf>
+        <CardTx>
+          <POI><Id><Id>TERM001</Id></Id></POI>
+        </CardTx>
+      </Ntry>
+
+      <!-- Entry 5: generic fallback (no TxDtls, no CardTx) -->
+      <Ntry>
+        <Amt Ccy="CHF">50.00</Amt>
+        <CdtDbtInd>CRDT</CdtDbtInd>
+        <BookgDt><Dt>2024-01-25</Dt></BookgDt>
+        <AddtlNtryInf>Generic payment</AddtlNtryInf>
+      </Ntry>
+
+    </Stmt>
+  </BkToCstmrStmt>
+</Document>

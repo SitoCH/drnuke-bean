@@ -142,3 +142,14 @@ pyrightconfig.json
 *.xml
 pipeline_sectrets.py
 .ruff_cache/
+
+# reviewed synthetic/scrubbed test fixtures, explicitly tracked
+!tests/fixtures/finpension/finpension_S3a_Portfolio1_fixture.csv
+!tests/fixtures/ibkr/flexquery.xml
+!tests/fixtures/ibkr/not_flexquery.xml
+!tests/fixtures/ibkr/sample_flexquery_response.xml
+!tests/fixtures/ibkr/valid_flexquery.xml
+!tests/fixtures/ibkr/wrong_queryname.xml
+!tests/fixtures/pfg/statement.csv
+!tests/fixtures/sbb/sbb_fixture.csv
+!tests/fixtures/zkb/camt053.xml

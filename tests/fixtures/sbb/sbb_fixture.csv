@@ -1,0 +1,33 @@
+Tariff,Route,Via (optional),Price,Co-passenger(s),Travel date,Validity,Order date,Order number,Payment methods,Purchaser e-mail
+Z-Pass Schwyz/Zug-ZVV Day Pass,Zürich Seebach → Baar,Zürich - Rotkreuz - Steinhausen,24.80,testuser,29.03.2024,29.03.2024 00:00 - 29.03.2024 23:59,29.03.2024,293847165029,Half Fare Card PLUS,testuser@email.com
+ZVV 24h-Ticket,Zürich Tiefenbrunnen → Bülach,Zürich - Opfikon,8.60,testuser,26.03.2024,26.03.2024 00:00 - 26.03.2024 23:59,26.03.2024,847361029458,Half Fare Card PLUS,testuser@email.com
+ZVV 24h-Ticket,Zürich Wipkingen → Zürich Leimbach,Zürich,7.80,testuser,20.03.2024,20.03.2024 00:00 - 20.03.2024 23:59,20.03.2024,563829104736,Half Fare Card PLUS,testuser@email.com
+ZVV 24h-Ticket,Zürich Enge → Volketswil,Zürich,8.60,testuser,19.03.2024,19.03.2024 00:00 - 19.03.2024 23:59,19.03.2024,192847563820,Half Fare Card PLUS,testuser@email.com
+ZVV 24h-Ticket,Zürich Affoltern → Regensdorf-Watt,Opfikon | Opfikon,31.40,testuser2 | testuser3,15.03.2024,15.03.2024 00:00 - 15.03.2024 23:59,15.03.2024,738291046582,test_paymen_method,testuser@email.com
+ZVV 24h-Ticket,Zürich Leimbach → Regensdorf-Watt,Kloten,10.80,testuser,14.03.2024,14.03.2024 00:00 - 14.03.2024 23:59,14.03.2024,495827361049,Half Fare Card PLUS,testuser@email.com
+ZVV 24h-Ticket,Zürich Enge → Bülach,Opfikon,8.60,testuser,12.03.2024,12.03.2024 00:00 - 12.03.2024 23:59,12.03.2024,671839204857,Half Fare Card PLUS,testuser@email.com
+Day Pass for the Half Fare Travelcard,,,86.00,testuser,07.03.2024,07.03.2024 00:00 - 07.03.2024 23:59,06.03.2024,384729106583,Half Fare Card PLUS,testuser@email.com
+ZVV 24h-Ticket,Zürich Wipkingen → Bülach,Opfikon,8.60,testuser,05.03.2024,05.03.2024 00:00 - 05.03.2024 23:59,05.03.2024,927463810254,Half Fare Card PLUS,testuser@email.com
+Z-Pass Schwyz/Zug-ZVV Day Pass,Zürich Tiefenbrunnen → Illgau Post,Zürich - Kilchberg ZH - Rüschlikon - Sattel-Aegeri - Lachen SZ - Muotathal,27.60,testuser3,03.03.2024,03.03.2024 00:00 - 03.03.2024 23:59,02.03.2024,516382904175,test_paymen_method,testuser@email.com
+ZVV 24h-Ticket,,,7.80,testuser,01.03.2024,01.03.2024 00:00 - 01.03.2024 23:59,01.03.2024,839274610382,Half Fare Card PLUS,testuser@email.com
+ZVV 24h-Ticket,Zürich Wollishofen → Bülach,Opfikon,8.60,testuser,19.02.2024,19.02.2024 00:00 - 19.02.2024 23:59,19.02.2024,264817390526,Half Fare Card PLUS,testuser@email.com
+Point-to-point Ticket,Zürich Hardbrücke ↔ Thun,Zürich - Aarau,47.00,testuser,15.02.2024,15.02.2024 00:00 - 15.02.2024 23:59,15.02.2024,748392016473,Half Fare Card PLUS,testuser@email.com
+ZVV 24h-Ticket,Zürich Seebach → Bülach,Opfikon,8.60,testuser,12.02.2024,12.02.2024 00:00 - 12.02.2024 23:59,12.02.2024,391827465039,Half Fare Card PLUS,testuser@email.com
+ZVV 24h-Ticket,,,7.80,testuser,04.02.2024,04.02.2024 00:00 - 04.02.2024 23:59,04.02.2024,628374910265,Half Fare Card PLUS,testuser@email.com
+Z-Pass OSTWIND-ZVV Individual Ticket,Neuhausen am Rheinfall → Zürich Stadelhofen,Beringen - Stein am Rhein - Kaiserstuhl - Kloten o Oberwinterthur,13.40,testuser,31.01.2024,31.01.2024 00:00 - 31.01.2024 23:59,31.01.2024,174839260147,Half Fare Card PLUS,testuser@email.com
+Super Sparpreis Europa,Zürich Wipkingen → Stuttgart,,43.00,testuser,31.01.2024,31.01.2024 00:00 - 31.01.2024 23:59,30.01.2024,836291047368,test_paymen_method,testuser@email.com
+ZVV 24h-Ticket,Zürich Affoltern → Bülach,Opfikon,8.60,testuser,29.01.2024,29.01.2024 00:00 - 29.01.2024 23:59,29.01.2024,492837610493,Half Fare Card PLUS,testuser@email.com
+ZVV Single Ticket,,,4.20,testuser,28.01.2024,28.01.2024 00:00 - 28.01.2024 23:59,28.01.2024,719284036172,Half Fare Card PLUS,testuser@email.com
+ZVV 24h-Ticket,Zürich Tiefenbrunnen → Bülach,Volketswil,8.60,testuser,22.01.2024,22.01.2024 00:00 - 22.01.2024 23:59,22.01.2024,385920174638,Half Fare Card PLUS,testuser@email.com
+Super Sparpreis Europa,Zürich Enge → Berlin,Liestal,88.00,testuser,25.01.2024,25.01.2024 00:00 - 25.01.2024 23:59,20.01.2024,947281630492,test_paymen_method,testuser@email.com
+Super Sparpreis Europa,Berlin → Zürich Altstetten,Darmstadt Hbf,82.00,testuser,28.01.2024,28.01.2024 00:00 - 28.01.2024 23:59,20.01.2024,261839047261,test_paymen_method,testuser@email.com
+Z-Pass OSTWIND-ZVV Day Pass,Zürich Leimbach → Niederurnen,All Zones,33.60,testuser,18.01.2024,18.01.2024 00:00 - 18.01.2024 23:59,17.01.2024,583749201658,Half Fare Card PLUS,testuser@email.com
+Point-to-point Ticket,Flumserberg Tannenheim → Zürich Wipkingen,Bus - Sennwald - Mels - Zürich,18.40,testuser,17.01.2024,17.01.2024 00:00 - 17.01.2024 23:59,17.01.2024,417263890142,Half Fare Card PLUS,testuser@email.com
+ZVV Single Ticket,,,4.20,testuser,16.01.2024,16.01.2024 00:00 - 16.01.2024 23:59,16.01.2024,936284710936,Half Fare Card PLUS,testuser@email.com
+ZVV Single Ticket,,,4.20,testuser,14.01.2024,14.01.2024 00:00 - 14.01.2024 23:59,14.01.2024,752183640275,Half Fare Card PLUS,testuser@email.com
+ZVV 24h-Ticket,Zürich Seebach → Oberwinterthur,,11.80,testuser,13.01.2024,13.01.2024 00:00 - 13.01.2024 23:59,13.01.2024,619274830619,Half Fare Card PLUS,testuser@email.com
+Flexpreis Europa,Düsseldorf → Zürich Hardbrücke,,141.00,testuser,16.01.2024,16.01.2024 00:00 - 16.01.2024 23:59,12.01.2024,483920164839,test_paymen_method,testuser@email.com
+Flexpreis Europa,Zürich Stadelhofen → Düsseldorf,,157.00,testuser,14.01.2024,14.01.2024 00:00 - 14.01.2024 23:59,12.01.2024,829473016284,test_paymen_method,testuser@email.com
+Z-Pass Schwyz/Zug-ZVV Day Pass,Zürich Wipkingen → Willerzell,Zürich - Kilchberg ZH - Rüschlikon - Sattel-Aegeri - Lachen SZ,27.60,testuser,11.01.2024,11.01.2024 00:00 - 11.01.2024 23:59,11.01.2024,364827190364,Half Fare Card PLUS,testuser@email.com
+ZVV 24h-Ticket,Zürich Tiefenbrunnen → Uitikon Waldegg,Zürich,8.60,testuser,10.01.2024,10.01.2024 00:00 - 10.01.2024 23:59,10.01.2024,518263940518,Half Fare Card PLUS,testuser@email.com
+ZVV 24h-Ticket,Zürich Affoltern → Bülach,Opfikon,8.60,testuser,08.01.2024,08.01.2024 00:00 - 08.01.2024 23:59,08.01.2024,729483610729,test_paymen_method2,testuser@email.com

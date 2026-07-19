@@ -56,7 +56,7 @@ Usage in run_imports.py::
                 query_name=cfg.IBKR_QUERY_NAME,
                 currency='CHF',
                 # date of the first import run with lot labeling; never change
-                transactionID_labeled_since='2026-08-01',
+                transactionID_labeled_since=date(2026, 8, 1),
                 account_map={
                     'U88776655': {
                         'root': 'Assets:Invest:IBKR:Trading',
@@ -236,10 +236,10 @@ class IBKRImporter(beangulp.Importer):
                             (priced BUY cost spec, date-only sell cost spec)
                             and carry the transactionID as posting metadata
                             instead, for a later scripted ledger migration.
-                            Accepts a ``datetime.date`` or an ISO
-                            ``YYYY-MM-DD`` string.  Set it once -- to the date
-                            of the first import run with this importer
-                            version -- and never change it afterwards: moving
+                            Must be a ``datetime.date`` (a ``datetime.datetime``
+                            is rejected).  Set it once -- to the date of the
+                            first import run with this importer version --
+                            and never change it afterwards: moving
                             it backwards labels reductions of unlabeled
                             historical lots, moving it forwards un-labels
                             reductions of already-labeled lots.  ``None``
@@ -262,7 +262,7 @@ class IBKRImporter(beangulp.Importer):
         fees_suffix: str = "Fees",
         fees_account: str | None = None,
         pnl_suffix: str = "PnL",
-        transactionID_labeled_since: date | str | None = None,
+        transactionID_labeled_since: date | None = None,
         symbol_map: dict[str, str] | None = None,
     ) -> None:
         if account_map is not None:
@@ -285,8 +285,15 @@ class IBKRImporter(beangulp.Importer):
         self._fees_suffix = fees_suffix
         self._fees_account = fees_account
         self._pnl_suffix = pnl_suffix
-        if isinstance(transactionID_labeled_since, str):
-            transactionID_labeled_since = date.fromisoformat(transactionID_labeled_since)
+        if (
+            transactionID_labeled_since is not None
+            and type(transactionID_labeled_since) is not date
+        ):
+            raise TypeError(
+                "IBKRImporter: transactionID_labeled_since must be a datetime.date "
+                f"(not {type(transactionID_labeled_since).__name__}); "
+                f"got {transactionID_labeled_since!r}"
+            )
         self._labeled_since: date | None = transactionID_labeled_since
         if self._labeled_since is None:
             logger.warning(
