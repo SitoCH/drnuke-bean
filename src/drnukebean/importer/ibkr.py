@@ -336,6 +336,10 @@ class IBKRImporter(beangulp.Importer):
                     return cr.toDate
         return None
 
+    @property
+    def name(self) -> str:
+        return f"ibkr.{self._account}"
+ 
     def extract(self, filepath: str, existing: list) -> list:
         """Parse the FlexQuery XML and return beancount directives."""
         try:
