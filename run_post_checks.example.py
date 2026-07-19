@@ -52,7 +52,7 @@ logger.add(
     encoding="utf-8",
 )
 
-import pipeline_secrets as cfg  # noqa: E402
+import pipeline_secrets as cfg  # type: ignore[import-not-found]  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Config
@@ -120,9 +120,7 @@ def _apply_text_transforms(
 
         if dry_run:
             n_changed = sum(
-                1
-                for a, b in zip(original.splitlines(), text.splitlines())
-                if a != b
+                1 for a, b in zip(original.splitlines(), text.splitlines(), strict=False) if a != b
             )
             logger.info("[dry-run] text: {} line(s) would change in {}", n_changed, path.name)
         else:
@@ -133,7 +131,8 @@ def _apply_text_transforms(
 def _run_bean_format(files: list[Path], dry_run: bool) -> None:
     for path in files:
         if dry_run:
-            result = subprocess.run(
+            # _BEAN_FORMAT is a fixed local binary path, not user input.
+            result = subprocess.run(  # noqa: S603
                 [str(_BEAN_FORMAT), str(path)],
                 capture_output=True,
                 text=True,
@@ -147,7 +146,7 @@ def _run_bean_format(files: list[Path], dry_run: bool) -> None:
             else:
                 logger.debug("bean-format: no change: {}", path.name)
         else:
-            result = subprocess.run(
+            result = subprocess.run(  # noqa: S603
                 [str(_BEAN_FORMAT), "-i", str(path)],
                 capture_output=True,
                 text=True,
@@ -166,7 +165,8 @@ def _run_bean_format(files: list[Path], dry_run: bool) -> None:
 
 def _run_bean_check(ledger: Path) -> bool:
     logger.info("bean-check: {}", ledger)
-    result = subprocess.run(
+    # _BEAN_CHECK is a fixed local binary path, not user input.
+    result = subprocess.run(  # noqa: S603
         [str(_BEAN_CHECK), str(ledger)],
         capture_output=True,
         text=True,
@@ -261,9 +261,13 @@ def _parse_args() -> argparse.Namespace:
     le = p.add_mutually_exclusive_group()
     le.add_argument("--lf", action="store_true", help="normalize all line endings to LF")
     le.add_argument("--crlf", action="store_true", help="normalize all line endings to CRLF")
-    p.add_argument("--no-collapse", action="store_true", help="skip collapsing multiple blank lines")
+    p.add_argument(
+        "--no-collapse", action="store_true", help="skip collapsing multiple blank lines"
+    )
     p.add_argument("--no-trailing", action="store_true", help="skip trailing whitespace removal")
-    p.add_argument("--no-bean-format", action="store_true", help="skip bean-format posting alignment")
+    p.add_argument(
+        "--no-bean-format", action="store_true", help="skip bean-format posting alignment"
+    )
     p.add_argument("--no-bean-check", action="store_true", help="skip bean-check validation")
     p.add_argument("--no-flag-check", action="store_true", help="skip open-flag (!) report")
     return p.parse_args()

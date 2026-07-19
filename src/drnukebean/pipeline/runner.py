@@ -359,7 +359,11 @@ def _run_entry(
             logger.debug("[{}] skipped: {}", name, f.name)
 
     all_entries: list = []
-    dest = dry_path if dry_run else bean_output_file
+    if dry_run:
+        assert dry_path is not None  # caller sets dry_path whenever dry_run is True
+        dest = dry_path
+    else:
+        dest = bean_output_file
     for filepath in matched:
         entries = wrapped.extract(str(filepath), existing)
         if not entries:

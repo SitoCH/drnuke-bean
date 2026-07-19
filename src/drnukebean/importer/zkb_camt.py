@@ -46,7 +46,8 @@ def _parse_amount(text: str) -> Decimal:
 @functools.lru_cache(maxsize=64)
 def _parse(filepath: str):
     """Parse and cache an XML file by path to avoid redundant parses within a run."""
-    return ET.parse(filepath).getroot()
+    # Own bank's camt.053 export, not untrusted input.
+    return ET.parse(filepath).getroot()  # noqa: S314
 
 
 def _text(element, path: str, default: str = "") -> str:

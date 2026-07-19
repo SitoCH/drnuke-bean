@@ -144,6 +144,12 @@ def _cardtx(poi_id: str = "TERM001") -> str:
     return f"<CardTx><POI><Id><Id>{poi_id}</Id></Id></POI></CardTx>"
 
 
+def _num(posting: data.Posting) -> Decimal:
+    """Postings from a parsed camt.053 transaction always carry a concrete Amount."""
+    assert posting.units is not None and posting.units.number is not None
+    return posting.units.number
+
+
 # ===========================================================================
 # identify()
 # ===========================================================================
@@ -241,20 +247,20 @@ class TestTransferAmounts:
         td = _txdtls(amount="1000.00", cdt_dbt="CRDT", side="CRDT")
         path = _write(tmp_path, _camt(entries=_ntry(cdt_dbt="CRDT", txdtls=td)))
         txns = [e for e in _importer().extract(path, []) if isinstance(e, data.Transaction)]
-        assert txns[0].postings[0].units.number == Decimal("1000.00")
+        assert _num(txns[0].postings[0]) == Decimal("1000.00")
 
     def test_debit_amount_negative(self, tmp_path):
         td = _txdtls(amount="500.00", cdt_dbt="DBIT", side="DBIT")
         path = _write(tmp_path, _camt(entries=_ntry(cdt_dbt="DBIT", txdtls=td)))
         txns = [e for e in _importer().extract(path, []) if isinstance(e, data.Transaction)]
-        assert txns[0].postings[0].units.number == Decimal("-500.00")
+        assert _num(txns[0].postings[0]) == Decimal("-500.00")
 
     def test_txdtls_amount_takes_precedence_over_ntry(self, tmp_path):
         # Ntry has 300.00, TxDtls has 150.00 — TxDtls wins
         td = _txdtls(amount="150.00", cdt_dbt="CRDT", side="CRDT")
         path = _write(tmp_path, _camt(entries=_ntry(amount="300.00", cdt_dbt="CRDT", txdtls=td)))
         txns = [e for e in _importer().extract(path, []) if isinstance(e, data.Transaction)]
-        assert txns[0].postings[0].units.number == Decimal("150.00")
+        assert _num(txns[0].postings[0]) == Decimal("150.00")
 
 
 # ===========================================================================
@@ -326,7 +332,7 @@ class TestBatch:
         td2 = _txdtls(amount="200.00", cdt_dbt="DBIT", side="DBIT")
         path = _write(tmp_path, _camt(entries=_ntry(cdt_dbt="DBIT", txdtls=td1 + td2)))
         txns = [e for e in _importer().extract(path, []) if isinstance(e, data.Transaction)]
-        amounts = {t.postings[0].units.number for t in txns}
+        amounts = {_num(t.postings[0]) for t in txns}
         assert amounts == {Decimal("-100.00"), Decimal("-200.00")}
 
 
@@ -347,7 +353,7 @@ class TestCardTransaction:
         )
         txns = [e for e in _importer().extract(path, []) if isinstance(e, data.Transaction)]
         assert len(txns) == 1
-        assert txns[0].postings[0].units.number == Decimal("-75.30")
+        assert _num(txns[0].postings[0]) == Decimal("-75.30")
 
     def test_card_txn_payee_from_poi_id(self, tmp_path):
         path = _write(
@@ -475,7 +481,7 @@ class TestEdgeCases:
         path = _write(tmp_path, xml)
         txns = [e for e in _importer().extract(path, []) if isinstance(e, data.Transaction)]
         assert len(txns) == 1
-        assert txns[0].postings[0].units.number > 0  # treated as credit (positive)
+        assert _num(txns[0].postings[0]) > 0  # treated as credit (positive)
 
 
 # ===========================================================================

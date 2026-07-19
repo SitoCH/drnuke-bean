@@ -85,6 +85,7 @@ def _get_holdings(
             currency = pos.units.currency
             cost_currency = pos.cost.currency
             units = pos.units.number
+            assert units is not None  # Amount.number stub is Optional; assert to narrow
             book_value = units * pos.cost.number
             key = (acc_name, currency, cost_currency)
             if key in groups:
@@ -101,9 +102,11 @@ def _matching_unrealized(
     cost_currency: str,
     prev_currency: str,
 ) -> bool:
+    first_units = entry.postings[0].units
+    assert first_units is not None  # self-generated postings always carry an Amount
     return (
         any(p.account == equity_account for p in entry.postings)
-        and entry.postings[0].units.currency == cost_currency
+        and first_units.currency == cost_currency
         and entry.meta.get("prev_currency") == prev_currency
     )
 
@@ -130,7 +133,11 @@ def _find_sell_income_account(
         if not (period_start <= entry.date <= period_end):
             continue
         has_reduction = any(
-            p.account == acc_name and p.units.currency == currency and p.units.number < 0
+            p.account == acc_name
+            and p.units is not None
+            and p.units.currency == currency
+            and p.units.number is not None
+            and p.units.number < 0
             for p in entry.postings
         )
         if not has_reduction:
@@ -154,6 +161,14 @@ def _find_sell_income_account(
             None,
         )
     return income_accounts.pop(), None
+
+
+def _sans_root(acc_name: str) -> str:
+    """account.sans_root() stub returns Optional[str] but is only None for an empty
+    account name, which never happens here; assert to narrow."""
+    stripped = account.sans_root(acc_name)
+    assert stripped is not None
+    return stripped
 
 
 def _find_previous_unrealized(
@@ -220,8 +235,8 @@ def _add_unrealized_gains_at_date(
         pnl = market_value - book_value
 
         # Equity offset (no NAV impact) mirrors the asset account under Equity root.
-        equity_account = account.join(equity_account_type, account.sans_root(acc_name))
-        income_account = account.join(income_account_type, account.sans_root(acc_name))
+        equity_account = account.join(equity_account_type, _sans_root(acc_name))
+        income_account = account.join(income_account_type, _sans_root(acc_name))
         if equity_subaccount:
             equity_account = account.join(equity_account, equity_subaccount)
         if income_subaccount:
@@ -233,12 +248,18 @@ def _add_unrealized_gains_at_date(
             unrealized_entries, equity_account, cost_currency, currency
         )
 
-        if latest and pnl == latest.postings[0].units.number:
+        if latest:
+            latest_units = latest.postings[0].units
+            assert latest_units is not None and latest_units.number is not None
+            prev_pnl = latest_units.number
+        else:
+            prev_pnl = ZERO
+
+        if latest and pnl == prev_pnl:
             continue
         if pnl == ZERO and not latest:
             continue
 
-        prev_pnl = latest.postings[0].units.number if latest else ZERO
         relative_pnl = pnl - prev_pnl
         gain_loss_str = "gain" if relative_pnl > ZERO else "loss"
         avg_cost = book_value / total_units
@@ -250,7 +271,9 @@ def _add_unrealized_gains_at_date(
 
         txn_meta = data.new_metadata(meta["filename"], 1000 + index)
         txn_meta["prev_currency"] = currency
-        entry = data.Transaction(txn_meta, date, FLAG_UNREALIZED, None, narration, set(), set(), [])
+        entry = data.Transaction(
+            txn_meta, date, FLAG_UNREALIZED, None, narration, data.EMPTY_SET, data.EMPTY_SET, []
+        )
         entry.postings.extend(
             [
                 # Equity: debit on gain (positive pnl); offset keeps NAV neutral.
@@ -261,6 +284,7 @@ def _add_unrealized_gains_at_date(
         )
         if latest:
             for posting in latest.postings[:2]:
+                assert posting.units is not None  # self-generated postings always carry an Amount
                 entry.postings.append(
                     data.Posting(posting.account, -posting.units, None, None, None, None)
                 )
@@ -294,7 +318,7 @@ def _make_clear_entries(
     clear_entries: list = []
     errors: list = []
     for acc_name, cost_currency, currency in closed_positions:
-        equity_account = account.join(equity_account_type, account.sans_root(acc_name))
+        equity_account = account.join(equity_account_type, _sans_root(acc_name))
         if subaccount:
             equity_account = account.join(equity_account, subaccount)
         latest = _find_previous_unrealized(new_entries, equity_account, cost_currency, currency)
@@ -304,6 +328,8 @@ def _make_clear_entries(
         clear_meta = data.new_metadata(meta["filename"], 999)
         clear_meta["prev_currency"] = currency
         eq_p, inc_p = latest.postings[0], latest.postings[1]
+        # Both postings are self-generated by this plugin and always carry an Amount.
+        assert eq_p.units is not None and inc_p.units is not None
 
         # A position that disappeared from one account but still exists in another
         # account this month is a transfer, not a sale.  Reverse both sides
@@ -316,8 +342,8 @@ def _make_clear_entries(
                 FLAG_UNREALIZED,
                 None,
                 f"Reverse unrealized gains/losses of {currency} — position transferred",
-                set(),
-                set(),
+                data.EMPTY_SET,
+                data.EMPTY_SET,
                 [],
             )
             txn.postings.append(data.Posting(eq_p.account, -eq_p.units, None, None, None, None))
@@ -337,6 +363,7 @@ def _make_clear_entries(
         if err:
             errors.append(err)
             continue
+        assert realized_income_account is not None  # err is None only when an account was found
 
         txn = data.Transaction(
             clear_meta,
@@ -344,8 +371,8 @@ def _make_clear_entries(
             FLAG_UNREALIZED,
             None,
             f"Clear unrealized gains/losses of {currency}",
-            set(),
-            set(),
+            data.EMPTY_SET,
+            data.EMPTY_SET,
             [],
         )
         # Equity side: negate the prior equity posting (clears balance-sheet offset).
@@ -434,7 +461,7 @@ def add_unrealized_gains(
     for idx, acc_ in enumerate(sorted(new_accounts)):
         if acc_ not in existing_accounts:
             m = data.new_metadata(meta["filename"], idx)
-            new_open_entries.append(data.Open(m, new_entries[0].date, acc_, None, None))
+            new_open_entries.append(data.Open(m, new_entries[0].date, acc_, [], None))
 
     return entries + new_open_entries + new_entries, errors
 

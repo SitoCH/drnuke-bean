@@ -290,7 +290,7 @@ class TestLoadExisting:
             meta={"filename": "", "lineno": 0},
             date=datetime.date(2015, 1, 1),
             account="Liabilities:OldAccount",
-            currencies=None,
+            currencies=[],
             booking=None,
         )
         old_close = data.Close(

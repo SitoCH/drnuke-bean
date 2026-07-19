@@ -311,7 +311,8 @@ class IBKRImporter(beangulp.Importer):
     def identify(self, filepath: str) -> bool:
         """Match IBKR FlexQuery XML files, optionally filtered by query name."""
         try:
-            root = ET.parse(filepath).getroot()
+            # Own bank's FlexQuery export, not untrusted input.
+            root = ET.parse(filepath).getroot()  # noqa: S314
         except ET.ParseError:
             return False
         if root.tag != _FLEX_ROOT_TAG:

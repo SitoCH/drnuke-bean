@@ -285,11 +285,13 @@ class TestExtractHalbtax:
     def test_halbtax_plus_spelling_also_works(self, tmp_path):
         path = _write(tmp_path, _EN_HEADER + _en_row(payment="Halbtax PLUS"))
         txn = _importer().extract(path, [])[0]
+        assert isinstance(txn, data.Transaction)
         assert txn.postings[0].account == _HALBTAX
 
     def test_de_halbtax_plus(self, tmp_path):
         path = _write(tmp_path, _DE_HEADER + _de_row(zahlungsmittel="Halbtax PLUS"))
         txn = _importer().extract(path, [])[0]
+        assert isinstance(txn, data.Transaction)
         assert txn.postings[0].account == _HALBTAX
 
 
@@ -357,6 +359,7 @@ class TestExtractNarration:
             ),
         )
         txn = _importer().extract(path, [])[0]
+        assert isinstance(txn, data.Transaction)
         assert txn.narration == "Zürich HB -> Bülach"
 
     def test_narration_appends_travel_date_when_different(self, tmp_path):
@@ -369,6 +372,7 @@ class TestExtractNarration:
             ),
         )
         txn = _importer().extract(path, [])[0]
+        assert isinstance(txn, data.Transaction)
         assert txn.narration == "Zürich HB -> München Hbf, 14.01.2026"
 
     def test_narration_no_date_suffix_when_same(self, tmp_path):
@@ -379,6 +383,7 @@ class TestExtractNarration:
             + _en_row(route="Bern -> Zürich", travel_date="05.03.2026", order_date="05.03.2026"),
         )
         txn = _importer().extract(path, [])[0]
+        assert isinstance(txn, data.Transaction)
         assert txn.narration == "Bern -> Zürich"
 
     def test_empty_route_date_different_gives_tariff_with_date(self, tmp_path):
@@ -395,6 +400,7 @@ class TestExtractNarration:
             ),
         )
         txn = _importer().extract(path, [])[0]
+        assert isinstance(txn, data.Transaction)
         assert txn.narration == "ZVV 24h-Ticket, 07.03.2026"
 
     def test_de_narration_date_appended(self, tmp_path):
@@ -405,6 +411,7 @@ class TestExtractNarration:
             + _de_row(strecke="Bern -> Zürich", reisedatum="05.03.2026", bestelldatum="10.01.2026"),
         )
         txn = _importer().extract(path, [])[0]
+        assert isinstance(txn, data.Transaction)
         assert txn.narration == "Bern -> Zürich, 05.03.2026"
 
 
@@ -421,12 +428,15 @@ class TestExtractEdgeCases:
             _EN_HEADER + _en_row(route="", via="", tariff="Day Pass for the Half Fare Travelcard"),
         )
         txn = _importer().extract(path, [])[0]
+        assert isinstance(txn, data.Transaction)
         assert txn.narration == "Day Pass for the Half Fare Travelcard"
 
     def test_price_with_apostrophe_separator(self, tmp_path):
         # Swiss locale uses apostrophe as thousands separator
         path = _write(tmp_path, _EN_HEADER + _en_row(price="1'234.00"))
         txn = _importer().extract(path, [])[0]
+        assert isinstance(txn, data.Transaction)
+        assert txn.postings[0].units is not None
         assert txn.postings[0].units.number == Decimal("-1234.00")
 
     def test_bad_date_emits_note_not_crash(self, tmp_path):
@@ -477,6 +487,7 @@ class TestExtractEdgeCases:
     def test_whitespace_trimmed_from_route(self, tmp_path):
         path = _write(tmp_path, _EN_HEADER + _en_row(route="  Zürich -> Bern  "))
         txn = _importer().extract(path, [])[0]
+        assert isinstance(txn, data.Transaction)
         assert txn.narration == "Zürich -> Bern"
 
 

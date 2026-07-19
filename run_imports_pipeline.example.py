@@ -18,24 +18,11 @@ import subprocess
 from datetime import date, datetime
 from pathlib import Path
 
+import pipeline_secrets as cfg  # type: ignore[import-not-found]  # user-created, not in repo
 from loguru import logger
-
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-
-_log_dir = Path.cwd() / "logs"
-_log_dir.mkdir(exist_ok=True)
-logger.add(
-    _log_dir / f"ingest_{datetime.now():%Y%m%d_%H%M%S}.log",
-    level="DEBUG",
-    encoding="utf-8",
-)
-
-import pipeline_secrets as cfg
 from tariochbctools.importers.neon.importer import Importer as NeonImporter
 from tariochbctools.importers.revolut.importer import Importer as RevolutImporter
-from transaction_fixes import (
+from transaction_fixes import (  # type: ignore[import-not-found]  # user-created, not in repo
     fixes_ibkr,
     fixes_neon,
     fixes_pfg,
@@ -53,6 +40,18 @@ from drnukebean.importer.zkb_camt import ZKBCamtImporter
 from drnukebean.importer.zkb_ebics import make_zkb_setup
 from drnukebean.pipeline.runner import run_all
 from drnukebean.prices.split import run_split_prices
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+_log_dir = Path.cwd() / "logs"
+_log_dir.mkdir(exist_ok=True)
+logger.add(
+    _log_dir / f"ingest_{datetime.now():%Y%m%d_%H%M%S}.log",
+    level="DEBUG",
+    encoding="utf-8",
+)
 
 ZKB_ACCOUNT = "Assets:Bank:ZKB:CHF"
 
@@ -169,7 +168,7 @@ pipelines = [
             # exactly the lot IBKR reports as closed (same-day multi-lot sells
             # are otherwise ambiguous).
             # - Set it to the date of the first import run with this importer
-            #   version  moving it in either  direction breaks lot matching 
+            #   version  moving it in either  direction breaks lot matching
             #   across the threshold, if no separate backfilling of transaction id
             #   cost specs happen by the user
             # - Leaving it unset logs a warning on every run and keeps the
@@ -222,4 +221,5 @@ if __name__ == "__main__":
     _post = [sys.executable, str(Path(__file__).with_name("run_post_checks.py")), "--no-bean-check"]
     if "--dry-run" in sys.argv:
         _post.append("--dry-run")
-    subprocess.run(_post, check=False)
+    # fixed local script path, not user input
+    subprocess.run(_post, check=False)  # noqa: S603

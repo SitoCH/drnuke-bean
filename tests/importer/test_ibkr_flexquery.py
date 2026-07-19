@@ -29,6 +29,11 @@ _QUERY_NAME = "TestQuery"
 _TOKEN = "EXAMPLE_TOKEN_12345"
 _QUERY_ID = "999999"
 
+_WRONG_QUERY_XML = (
+    b'<FlexQueryResponse queryName="WrongQuery" type="AF">'
+    b'<FlexStatements count="0"/></FlexQueryResponse>'
+)
+
 DATE_FROM = datetime.date(2024, 1, 1)
 DATE_TO = datetime.date(2024, 1, 31)
 
@@ -56,13 +61,19 @@ def _setup(dest_dir: Path, mocker, response=_SAMPLE_XML, query_name=_QUERY_NAME)
 
 class TestExtractStatementDates:
     def test_parses_yyyymmdd_format(self):
-        xml = b'<FlexQueryResponse><FlexStatement fromDate="20240101" toDate="20240131"/></FlexQueryResponse>'
+        xml = (
+            b'<FlexQueryResponse><FlexStatement fromDate="20240101" '
+            b'toDate="20240131"/></FlexQueryResponse>'
+        )
         from_d, to_d = _extract_statement_dates(xml)
         assert from_d == "2024-01-01"
         assert to_d == "2024-01-31"
 
     def test_accepts_str_input(self):
-        xml = '<FlexQueryResponse><FlexStatement fromDate="20240201" toDate="20240229"/></FlexQueryResponse>'
+        xml = (
+            '<FlexQueryResponse><FlexStatement fromDate="20240201" '
+            'toDate="20240229"/></FlexQueryResponse>'
+        )
         from_d, to_d = _extract_statement_dates(xml)
         assert from_d == "2024-02-01"
         assert to_d == "2024-02-29"
@@ -187,8 +198,7 @@ class TestCacheHit:
 
 class TestQueryNameMismatch:
     def test_raises_on_queryname_mismatch(self, tmp_path, mocker):
-        wrong_xml = b'<FlexQueryResponse queryName="WrongQuery" type="AF"><FlexStatements count="0"/></FlexQueryResponse>'
-        mocker.patch.object(fq_module.client, "download", return_value=wrong_xml)
+        mocker.patch.object(fq_module.client, "download", return_value=_WRONG_QUERY_XML)
         setup = make_ibkr_setup(_TOKEN, _QUERY_ID, _QUERY_NAME, tmp_path)
         with pytest.raises(RuntimeError, match="queryName mismatch"):
             setup(DATE_FROM, DATE_TO)
@@ -196,8 +206,7 @@ class TestQueryNameMismatch:
     def test_cache_not_populated_on_mismatch(self, tmp_path, mocker):
         import diskcache
 
-        wrong_xml = b'<FlexQueryResponse queryName="WrongQuery" type="AF"><FlexStatements count="0"/></FlexQueryResponse>'
-        mocker.patch.object(fq_module.client, "download", return_value=wrong_xml)
+        mocker.patch.object(fq_module.client, "download", return_value=_WRONG_QUERY_XML)
         setup = make_ibkr_setup(_TOKEN, _QUERY_ID, _QUERY_NAME, tmp_path)
         try:
             setup(DATE_FROM, DATE_TO)
@@ -208,8 +217,7 @@ class TestQueryNameMismatch:
             assert cache_key not in cache
 
     def test_no_xml_file_written_on_mismatch(self, tmp_path, mocker):
-        wrong_xml = b'<FlexQueryResponse queryName="WrongQuery" type="AF"><FlexStatements count="0"/></FlexQueryResponse>'
-        mocker.patch.object(fq_module.client, "download", return_value=wrong_xml)
+        mocker.patch.object(fq_module.client, "download", return_value=_WRONG_QUERY_XML)
         setup = make_ibkr_setup(_TOKEN, _QUERY_ID, _QUERY_NAME, tmp_path)
         try:
             setup(DATE_FROM, DATE_TO)
@@ -243,7 +251,10 @@ class TestDownloadError:
 class TestFallbackFilename:
     def test_uses_requested_dates_when_statement_dates_missing(self, tmp_path, mocker):
         # XML without FlexStatement element -> dates are None -> fallback to requested dates
-        bare_xml = b'<FlexQueryResponse queryName="TestQuery" type="AF"><FlexStatements count="0"/></FlexQueryResponse>'
+        bare_xml = (
+            b'<FlexQueryResponse queryName="TestQuery" type="AF">'
+            b'<FlexStatements count="0"/></FlexQueryResponse>'
+        )
         mocker.patch.object(fq_module.client, "download", return_value=bare_xml)
         setup = make_ibkr_setup(_TOKEN, _QUERY_ID, _QUERY_NAME, tmp_path)
         setup(DATE_FROM, DATE_TO)

@@ -34,6 +34,7 @@ run_imports.py wiring example::
 import csv
 import re
 from datetime import date, timedelta
+from datetime import date as _Date  # alias so _parse_date's return type isn't shadowed below
 from pathlib import Path
 
 import beangulp
@@ -212,14 +213,15 @@ class FinPensionImporter(beangulp.Importer):
     # ------------------------------------------------------------------
 
     def fix_accounts(self, filepath: str) -> None:
-        try:
-            pillar, portfolio = re.search(self.regex, filepath, re.IGNORECASE).groups()
-        except AttributeError as e:
-            logger.error(
+        match = re.search(self.regex, filepath, re.IGNORECASE)
+        if match is None:
+            msg = (
                 f"could not extract pillar and/or portfolio from filename {filepath} "
                 f"with regex pattern {self.regex}."
             )
-            raise AttributeError(e) from e
+            logger.error(msg)
+            raise AttributeError(msg)
+        pillar, portfolio = match.groups()
         new_account = re.sub(r"S[23]a?", pillar, self.root_account)
         self.main_account = re.sub(r"Portfolio\d", portfolio, new_account)
 
@@ -250,6 +252,7 @@ class FinPensionImporter(beangulp.Importer):
         if shares_str:
             quantity = amount.Amount(D(shares_str), symbol)
             price = amount.Amount(D(row[_COL_ASSET_PRICE].strip()), "CHF")
+            assert quantity.number is not None  # Amount.number stub is Optional; assert to narrow
             buy_sell = "BUY" if quantity.number > 0 else "SELL"
             narration = " ".join(
                 [buy_sell, quantity.to_string(), "@", price.to_string() + ";", asset_name]
@@ -404,5 +407,5 @@ class FinPensionImporter(beangulp.Importer):
         return [r for r in rows if self._parse_date(r[_COL_DATE]).year == self.year]
 
     @staticmethod
-    def _parse_date(date_str: str) -> date:
-        return date.fromisoformat(date_str.strip())
+    def _parse_date(date_str: str) -> _Date:
+        return _Date.fromisoformat(date_str.strip())

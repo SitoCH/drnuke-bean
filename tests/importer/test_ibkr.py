@@ -184,6 +184,7 @@ class TestBuyTrade:
         response = make_response(trades=(make_buy_trade(trade_price="100.00"),))
         entries = _extract(importer, response, mocker, tmp_path)
         txn = next(e for e in entries if isinstance(e, data.Transaction))
+        assert txn.narration is not None
         assert "BUY" in txn.narration
         assert "100" in txn.narration
 
@@ -247,6 +248,7 @@ class TestSellTrade:
         response = make_response(trades=(sell, lot))
         entries = _extract(importer, response, mocker, tmp_path)
         txn = next(e for e in entries if isinstance(e, data.Transaction))
+        assert txn.narration is not None
         assert "SELL" in txn.narration
 
     def test_sell_lot_posting_has_cost_spec_with_open_date(self, importer, mocker, tmp_path):
@@ -261,7 +263,10 @@ class TestSellTrade:
         lot_postings = [
             p
             for p in txn.postings
-            if p.account == f"{ACCOUNT}:VT" and p.units is not None and p.units.number < 0
+            if p.account == f"{ACCOUNT}:VT"
+            and p.units is not None
+            and p.units.number is not None
+            and p.units.number < 0
         ]
         assert len(lot_postings) == 1
         cost = lot_postings[0].cost
@@ -570,6 +575,7 @@ class TestForexTrade:
         entries = _extract(importer, response, mocker, tmp_path)
         txn = next(e for e in entries if isinstance(e, data.Transaction))
         # Should mention the primary currency amount
+        assert txn.narration is not None
         assert "USD" in txn.narration or "1000" in txn.narration
 
 
@@ -585,6 +591,7 @@ class TestDividends:
         txns = [e for e in entries if isinstance(e, data.Transaction)]
         assert len(txns) == 1
         txn = txns[0]
+        assert txn.narration is not None
         assert "Dividend" in txn.narration
 
     def test_dividend_with_wht_three_postings(self, importer, mocker, tmp_path):
@@ -668,6 +675,7 @@ class TestFees:
         response = make_response(cash_transactions=(fee,))
         entries = _extract(importer, response, mocker, tmp_path)
         txn = next(e for e in entries if isinstance(e, data.Transaction))
+        assert txn.narration is not None
         assert "Jan 2024" in txn.narration
 
     def test_fee_has_expense_and_liquidity_postings(self, importer, mocker, tmp_path):

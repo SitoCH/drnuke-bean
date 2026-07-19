@@ -1,0 +1,9 @@
+{
+  "venvPath": "/path/to/your/conda/envs",
+  "venv": "bean3",
+  "pythonVersion": "3.12",
+  "reportPrivateImportUsage": "none",
+  "extraPaths": [
+    "/path/to/your/editable/ibflex/checkout"
+  ]
+}

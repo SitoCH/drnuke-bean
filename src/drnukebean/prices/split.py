@@ -98,7 +98,7 @@ def _append_to_file(out_path: Path, entries: list[tuple[str, str, str, str]], dr
     if dry_run:
         logger.info("DRY: {} entries -> {}", len(lines), out_path)
         for line in lines:
-            print(line)
+            logger.info(line)
         return len(lines)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

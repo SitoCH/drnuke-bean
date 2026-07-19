@@ -11,7 +11,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, call
 
 import pytest
-from fintech.ebics import EbicsFunctionalError  # type: ignore[import-untyped]
 
 import drnukebean.importer.zkb_ebics as ebics_module  # calls fintech.register()
 from drnukebean.importer.zkb_ebics import (
@@ -20,6 +19,9 @@ from drnukebean.importer.zkb_ebics import (
     _write_statements,
     make_zkb_setup,
 )
+
+# Must be imported after drnukebean.importer.zkb_ebics, which calls fintech.register().
+from fintech.ebics import EbicsFunctionalError  # type: ignore[import-untyped]  # isort: skip
 
 # Runner passes first-of-month dates as period identifiers.
 DATE_FROM = datetime.date(2024, 1, 1)

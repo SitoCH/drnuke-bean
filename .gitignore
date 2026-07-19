@@ -140,7 +140,8 @@ pyrightconfig.json
 # no bank statements
 *.csv
 *.xml
-pipeline_sectrets.py
+pipeline_secrets.py
+transaction_fixes.py
 .ruff_cache/
 
 # reviewed synthetic/scrubbed test fixtures, explicitly tracked

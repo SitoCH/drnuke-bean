@@ -58,7 +58,7 @@ from __future__ import annotations
 
 import calendar
 import dataclasses
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -68,7 +68,7 @@ import fintech  # type: ignore[import-untyped]  # proprietary, no stubs
 
 fintech.register()  # must be called before importing fintech.ebics submodules
 
-from fintech.ebics import (  # type: ignore[import-untyped]
+from fintech.ebics import (  # type: ignore[import-untyped]  # noqa: E402
     BusinessTransactionFormat,
     EbicsBank,
     EbicsClient,
@@ -76,7 +76,7 @@ from fintech.ebics import (  # type: ignore[import-untyped]
     EbicsKeyRing,
     EbicsUser,
 )
-from loguru import logger
+from loguru import logger  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Credentials
@@ -161,7 +161,7 @@ def _fetch_statements(
     creds: ZKBCredentials,
     date_from: date,
     date_to: date,
-) -> dict[str, bytes]:
+) -> dict[str, bytes | str]:
     """Fetch CAMT.053 statements via EBICS BTD and confirm receipt.
 
     Returns the raw dict ``{original_filename: content}`` as delivered by the
@@ -174,9 +174,15 @@ def _fetch_statements(
     """
     client = _build_client(creds)
     try:
-        statements: dict[str, bytes] = client.BTD(_BTF, start=date_from, end=date_to)
+        # fintech is a frozen/compiled module with no visible return type for BTD().
+        statements: dict[str, bytes | str] = client.BTD(  # type: ignore[assignment]
+            _BTF, start=date_from, end=date_to
+        )
     except EbicsFunctionalError as exc:
-        if exc.code == EbicsFunctionalError.EBICS_NO_DOWNLOAD_DATA_AVAILABLE:
+        # .code is a real runtime attribute on EbicsFunctionalError; not visible to
+        # pyright since fintech is a frozen/compiled module.
+        exc_code = exc.code  # type: ignore[attr-defined]
+        if exc_code == EbicsFunctionalError.EBICS_NO_DOWNLOAD_DATA_AVAILABLE:
             logger.warning(
                 "ZKB EBICS: no statements available for {} -> {}; "
                 "this is normal for periods with no transactions",
@@ -206,7 +212,7 @@ def _fetch_statements(
 
 
 def _write_statements(
-    statements: dict[str, bytes],
+    statements: Mapping[str, bytes | str],
     dest: Path,
     date_from: date,
     date_to: date,
@@ -281,7 +287,7 @@ def make_zkb_setup(
         with diskcache.Cache(dest / ".cache") as cache:
             if cache_key in cache:
                 logger.info("ZKB EBICS: cache hit for {} -> {}", date_from, date_to)
-                statements: dict[str, bytes] = cast(dict, cache[cache_key])
+                statements: dict[str, bytes | str] = cast(dict, cache[cache_key])
             else:
                 logger.info(
                     "ZKB EBICS: fetching statements {} -> {} via EBICS",

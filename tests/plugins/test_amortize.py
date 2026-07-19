@@ -81,6 +81,12 @@ def _run(entries: list, config: str = CONFIG_SPREAD) -> tuple[list, list]:
     return amortize(entries, {}, config)
 
 
+def _num(posting: data.Posting) -> Decimal:
+    """Postings built by _posting() above always carry a concrete Amount."""
+    assert posting.units is not None and posting.units.number is not None
+    return posting.units.number
+
+
 # ---------------------------------------------------------------------------
 # Unit tests for helpers
 # ---------------------------------------------------------------------------
@@ -223,7 +229,7 @@ class TestSpreadSimple:
         txns = [e for e in self.entries if isinstance(e, data.Transaction)]
         children = txns[1:]
         total_expense = sum(
-            p.units.number
+            _num(p)
             for txn in children
             for p in txn.postings
             if p.account == "Expenses:Insurance:Home"
@@ -233,9 +239,7 @@ class TestSpreadSimple:
     def test_buffer_zeroes_out(self):
         txns = [e for e in self.entries if isinstance(e, data.Transaction)]
         buf_acc = "Assets:Prepaid:Amortize:Insurance:Home"
-        total_buf = sum(
-            p.units.number for txn in txns for p in txn.postings if p.account == buf_acc
-        )
+        total_buf = sum(_num(p) for txn in txns for p in txn.postings if p.account == buf_acc)
         assert total_buf == D("0")
 
     def test_child_meta_has_info_key(self):
@@ -291,13 +295,13 @@ class TestSpreadMultiLeg:
     def test_home_buffer_zeroes_out(self):
         txns = [e for e in self.entries if isinstance(e, data.Transaction)]
         buf_acc = "Assets:Prepaid:Amortize:Insurance:Home"
-        total = sum(p.units.number for txn in txns for p in txn.postings if p.account == buf_acc)
+        total = sum(_num(p) for txn in txns for p in txn.postings if p.account == buf_acc)
         assert total == D("0")
 
     def test_car_buffer_zeroes_out(self):
         txns = [e for e in self.entries if isinstance(e, data.Transaction)]
         buf_acc = "Assets:Prepaid:Amortize:Insurance:Car"
-        total = sum(p.units.number for txn in txns for p in txn.postings if p.account == buf_acc)
+        total = sum(_num(p) for txn in txns for p in txn.postings if p.account == buf_acc)
         assert total == D("0")
 
     def test_expense_totals(self):
@@ -305,13 +309,13 @@ class TestSpreadMultiLeg:
         children = txns[1:]
 
         home_total = sum(
-            p.units.number
+            _num(p)
             for txn in children
             for p in txn.postings
             if p.account == "Expenses:Insurance:Home"
         )
         car_total = sum(
-            p.units.number
+            _num(p)
             for txn in children
             for p in txn.postings
             if p.account == "Expenses:Insurance:Car"
@@ -322,7 +326,7 @@ class TestSpreadMultiLeg:
     def test_each_child_balanced(self):
         txns = [e for e in self.entries if isinstance(e, data.Transaction)]
         for child in txns[1:]:
-            total = sum(p.units.number for p in child.postings)
+            total = sum(_num(p) for p in child.postings)
             assert total == D("0"), f"Child on {child.date} not balanced: {total}"
 
 
@@ -364,17 +368,14 @@ class TestSplitSimple:
     def test_amounts_sum_to_original(self):
         txns = [e for e in self.entries if isinstance(e, data.Transaction)]
         expense_total = sum(
-            p.units.number
-            for txn in txns
-            for p in txn.postings
-            if p.account == "Expenses:Tax:Income"
+            _num(p) for txn in txns for p in txn.postings if p.account == "Expenses:Tax:Income"
         )
         assert expense_total == D("1200.00")
 
     def test_each_child_balanced(self):
         txns = [e for e in self.entries if isinstance(e, data.Transaction)]
         for child in txns:
-            total = sum(p.units.number for p in child.postings)
+            total = sum(_num(p) for p in child.postings)
             assert total == D("0"), f"Child on {child.date} not balanced: {total}"
 
     def test_child_meta_stripped(self):
@@ -403,7 +404,7 @@ class TestSplitMultiLeg:
         txns = [e for e in entries if isinstance(e, data.Transaction)]
         assert len(txns) == 3
         for child in txns:
-            total = sum(p.units.number for p in child.postings)
+            total = sum(_num(p) for p in child.postings)
             assert total == D("0")
 
 
@@ -430,7 +431,7 @@ class TestRounding:
         txns = [e for e in entries if isinstance(e, data.Transaction)]
         children = txns[1:]
         total = sum(
-            p.units.number for txn in children for p in txn.postings if p.account == "Expenses:Misc"
+            _num(p) for txn in children for p in txn.postings if p.account == "Expenses:Misc"
         )
         assert total == D("0.13")
 
@@ -449,9 +450,7 @@ class TestRounding:
         entries, errors = _run([txn], config=CONFIG_EMPTY)
         assert errors == []
         txns = [e for e in entries if isinstance(e, data.Transaction)]
-        total = sum(
-            p.units.number for txn in txns for p in txn.postings if p.account == "Expenses:Misc"
-        )
+        total = sum(_num(p) for txn in txns for p in txn.postings if p.account == "Expenses:Misc")
         assert total == D("0.13")
 
 

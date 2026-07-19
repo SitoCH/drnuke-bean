@@ -70,7 +70,10 @@ def _extract_statement_dates(raw: str | bytes) -> tuple[str | None, str | None]:
     IBKR encodes dates as YYYYMMDD; returns ISO strings (YYYY-MM-DD) or None.
     """
     try:
-        root = ET.fromstring(raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace"))
+        # Own IBKR FlexQuery export, not untrusted input.
+        root = ET.fromstring(  # noqa: S314
+            raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace")
+        )
         for stmt in root.iter("FlexStatement"):
             from_raw = stmt.get("fromDate")
             to_raw = stmt.get("toDate")
@@ -94,7 +97,10 @@ def _seconds_until_midnight() -> float:
 def _extract_query_name(raw: str | bytes) -> str | None:
     """Return the ``queryName`` attribute from the XML root element, or None."""
     try:
-        root = ET.fromstring(raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace"))
+        # Own IBKR FlexQuery export, not untrusted input.
+        root = ET.fromstring(  # noqa: S314
+            raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace")
+        )
         return root.get("queryName")
     except ET.ParseError:
         return None

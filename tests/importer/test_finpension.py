@@ -501,6 +501,7 @@ class TestExtractDividend:
         path = _write(tmp_path, _HEADER + row)
         txns = [e for e in _importer().extract(path, []) if isinstance(e, data.Transaction)]
         assert len(txns) == 1
+        assert txns[0].narration is not None
         assert "FUNDA" in txns[0].narration
 
 
@@ -526,6 +527,7 @@ class TestExtractDeposit:
         txn = next(e for e in _importer().extract(path, []) if isinstance(e, data.Transaction))
         assert len(txn.postings) == 1
         assert txn.postings[0].account == _CASH
+        assert txn.postings[0].units is not None
         assert txn.postings[0].units.number == Decimal("500.000000")
 
     def test_payee_is_self(self, tmp_path):
