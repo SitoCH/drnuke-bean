@@ -138,6 +138,19 @@ The `fixes` function receives a dict of transaction fields and may modify any of
 
 Parses CAMT.053.001.08 (ISO 20022, Swiss SPS/2.2 variant). The split between `zkb_camt.py` (pure XML parser) and `zkb_ebics.py` (network/credentials) is intentional: the importer can be used without EBICS by pointing it at manually downloaded XML files.
 
+#### Setting up EBICS
+
+Automated statement download uses the [`fintech`](https://www.python-fintech.de/) package's EBICS client and is entirely separate from this repo -- `zkb_ebics.py` only consumes an already-initialised keyring. First-time setup happens once, outside the pipeline:
+
+1. **Order EBICS access from ZKB.** Request EBICS H005 access for your account (business/e-banking support). ZKB sends back a bank letter (INI-Brief) with your `HostID`, `PartnerID` (ContractID) and the EBICS server URL.
+2. **Install `fintech`** (`pip install fintech`) 
+3. **Generate a keyring and user keys.** Follow the `fintech` docs to create an `EbicsKeyRing` (a local encrypted file + passphrase) and an `EbicsUser` with fresh INI/HIA keys. This produces the client-side key material ZKB needs to trust.
+4. **Send the INI letter to ZKB.** `fintech` can generate the INI letter (containing your public key fingerprints) for you to print, sign and submit to ZKB as instructed in the bank letter.
+5. **Activate the keys.** Once ZKB confirms activation (typically by mail, can take a few business days), run the `fintech` initialization calls (`INI`/`HIA`/`HPB`) once to exchange keys with the bank and complete the handshake.
+6. **Fill in `pipeline_secrets.py`.** Populate `ZKBCredentials` (`keys_file`, `passphrase`, `host_id`, `url`, `partner_id`, `user_id`) with the values from steps 1-3 -- see `pipeline_secrets.example.py`. `zkb_ebics.py` only opens this keyring and calls `client.BTD(...)`; it performs none of the steps above.
+
+Until this is done, the ZKB importer still works standalone: drop CAMT.053 XML files manually into the pipeline's `source_dir` for `zkb` and skip the `setup=make_zkb_setup(...)` entry.
+
 ### Finpension importer
 
 Finpension always exports the complete transaction history. The `year` parameter restricts extraction to a single calendar year; set to `None` to import everything.
