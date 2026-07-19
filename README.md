@@ -5,6 +5,23 @@ Find the v2 legacy version within the v2 branch
 
 ---
 
+## What's included
+
+**Plugins**
+- `amortize` — spreads or splits a transaction across multiple periods
+- `tax_forecast` — forecasts and accrues Swiss income tax for the canton of zurich
+
+**Importers**
+- `IBKR` — Interactive Brokers FlexQuery reports
+- `PostFinance (PFG)` — PostFinance giro account CSV exports
+- `ZKB` — Zürcher Kantonalbank CAMT.053 statements (EBICS or manual XML)
+- `Finpension` — Finpension pillar 2/3a CSV exports
+- `SBB` — SBB travel CSV exports, especially HalbtaxPlus
+
+See [Overview](#overview) below for details on each.
+
+---
+
 ## Quickstart
 
 clone and then install drnuke-bean in your python env
