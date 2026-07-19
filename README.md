@@ -1,6 +1,7 @@
 # drnuke-bean
 
 Beancount v3 importers and plugins for Swiss personal finance.
+Find the v2 legacy version within the v2 branch
 
 ---
 
